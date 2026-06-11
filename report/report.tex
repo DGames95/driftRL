@@ -1,0 +1,125 @@
+\documentclass[11pt]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\graphicspath{{figures/}}
+
+\title{RL Drift Controller on a 3-DOF Bicycle Model}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Vehicle model}
+The simulation uses a 3-DOF single-track (bicycle) model with body-frame
+states $(v_x, v_y, r)$ and global pose $(x, y, \psi)$:
+\begin{align}
+\dot{v}_x &= \tfrac{1}{m}\left(F_x - F_{y,f}\sin\delta\right) + r\,v_y, &
+\dot{v}_y &= \tfrac{1}{m}\left(F_{y,f}\cos\delta + F_{y,r}\right) - r\,v_x, \\
+\dot{r}  &= \tfrac{1}{I_z}\left(l_f F_{y,f}\cos\delta - l_r F_{y,r}\right), &
+\dot{\psi} &= r,
+\end{align}
+with $\dot{x} = v_x\cos\psi - v_y\sin\psi$ and
+$\dot{y} = v_x\sin\psi + v_y\cos\psi$.
+Lateral tire forces use a linear model with $\tanh$ saturation,
+\begin{equation}
+F_{y,i} = -F_{y,\max,i}\,\tanh\!\left(\frac{C_{\alpha,i}\,\alpha_i}{F_{y,\max,i}}\right),
+\qquad
+\alpha_f = \arctan\!\frac{v_y + l_f r}{v_x} - \delta,
+\quad
+\alpha_r = \arctan\!\frac{v_y - l_r r}{v_x},
+\end{equation}
+where $F_{y,\max,i} = \mu F_{z,i}$ uses the static axle loads.
+The throttle command produces a rear-axle longitudinal tire force capped at
+the friction limit, $F_{x,r} = \mathrm{clip}(T\,F_{\mathrm{drive,max}},
+\pm\mu F_{z,r})$, and the total longitudinal force includes quadratic drag,
+$F_x = F_{x,r} - c_d\,v_x|v_x|$. A friction-ellipse coupling reduces the
+rear lateral saturation limit with longitudinal force use:
+\begin{equation}
+F_{y,\max,r}^{\mathrm{eff}} = F_{y,\max,r}
+\sqrt{\max\!\left(1 - \left(\frac{F_{x,r}}{\mu F_{z,r}}\right)^{2},\;
+10^{-3}\right)},
+\end{equation}
+and this effective limit replaces $F_{y,\max,r}$ in the rear tire equation.
+The front axle is undriven and uncoupled. Integration is explicit Euler
+with $\Delta t = 0.02$\,s.
+
+\begin{table}[h]\centering
+\caption{Model parameters.}
+\begin{tabular}{llll}
+\toprule
+$m$ & 1300\,kg & $C_{\alpha,f}=C_{\alpha,r}$ & 90\,000\,N/rad \\
+$I_z$ & 1800\,kg\,m$^2$ & $\mu$ & 0.9 \\
+$l_f$ / $l_r$ & 1.2\,m / 1.4\,m & $F_{\mathrm{drive,max}}$ & 8000\,N \\
+$c_d$ & 1.0\,N\,s$^2$/m$^2$ & track radius / half-width & 30\,m / 4\,m \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Environment}
+The Gymnasium environment \texttt{DriftEnv} exposes the observation
+$[v_x, v_y, r, e_y, e_\psi]$, scaled elementwise by $[20, 10, 2, 4, \pi]$.
+The track is a counter-clockwise circle of radius 30\,m centred at the
+origin; $e_y$ is the signed radial offset from the centerline and $e_\psi$
+the heading error relative to the local tangent. The action is
+$[\delta, T]$ with $\delta \in [-0.5, 0.5]$\,rad and $T \in [-1, 1]$.
+Episodes start on the centerline with $v_x = 8 \pm 1$\,m/s and run at most
+1000 steps (20\,s). They terminate early, with an additional reward of
+$-400$, if $|e_y| > 4$\,m or $v_x < 1$\,m/s.
+
+The per-step reward is
+\begin{equation}
+R = v_x\cos e_\psi + w_1 |\beta| - w_2 e_y^2 - w_3 \dot{\delta}^2,
+\qquad \beta = \arctan\frac{v_y}{v_x},
+\end{equation}
+with $w_1 = 3.0$, $w_2 = 0.5$, $w_3 = 0.002$, and
+$\dot{\delta}$ the finite difference of consecutive steering commands.
+
+\section{Training}
+The policy is trained with Stable-Baselines3 PPO (\texttt{MlpPolicy},
+default two hidden layers of 64 units) for 500\,000 timesteps at a learning
+rate of $3\times10^{-4}$ and a discount factor $\gamma = 0.999$; all other
+hyperparameters are SB3 defaults. The discount factor was raised from the
+default $0.99$ so that the value horizon ($\approx 1/(1-\gamma)$ steps)
+covers the full 20\,s episode; with $\gamma = 0.99$ and a $-50$ termination
+penalty, training converged to a full-throttle policy that left the track
+after 3.7\,s. An
+\texttt{EvalCallback} evaluates the policy every 10\,000 steps on 5
+deterministic episodes and stores the best model.
+
+\section{Results}
+A single deterministic episode of the best saved model was rolled out from
+a fixed seed. The episode ran the full 1000 steps (20.0\,s, no early
+termination) with a return of 13914, covering 1.5 laps. The mean absolute
+slip angle was $6.7^\circ$ ($6.9^\circ$ after the initial transient,
+maximum $15.7^\circ$) and the mean absolute lateral error 0.59\,m
+(maximum 1.86\,m). Longitudinal velocity settled at 14.4\,m/s on average.
+The throttle command varied between 0.26 and 0.82 (mean 0.43); the
+steering command had mean $16.8^\circ$ with standard deviation
+$14.8^\circ$.
+Figure~\ref{fig:traj} shows the driven path, Figure~\ref{fig:phase} the
+$v_y$--$r$ phase portrait, and Figure~\ref{fig:hist} the slip-angle,
+velocity, lateral-error, and steering histories.
+
+\begin{figure}[h]\centering
+\includegraphics[width=0.55\textwidth]{trajectory.pdf}
+\caption{Vehicle trajectory (blue) and track boundaries (black).}
+\label{fig:traj}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=0.55\textwidth]{phase_portrait.pdf}
+\caption{Phase portrait of $v_y$ versus yaw rate $r$.}
+\label{fig:phase}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=0.7\textwidth]{histories.pdf}
+\caption{Time histories of slip angle $\beta$, body velocities, lateral
+error $e_y$, and steering angle $\delta$.}
+\label{fig:hist}
+\end{figure}
+
+\end{document}

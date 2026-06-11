@@ -1,0 +1,9 @@
+*.pdf
+*.aux
+*.log
+logs/
+*.txt
+*.claude
+
+__pycache__/
+models/
