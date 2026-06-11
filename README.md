@@ -1,45 +1,68 @@
-# 2D Drifting RL Controller
+# Drift Toy: RL + a playable 2D drifting game
 
-A minimal reinforcement-learning project that trains a PPO agent
-(Stable-Baselines3) to drift a vehicle around a circular track. The vehicle
-is a 3-DOF single-track (bicycle) model with a tanh-saturated tire model,
-integrated with explicit Euler at dt = 0.02 s.
+A small RL project around a 3-DOF single-track (bicycle) car model whose
+rear tire has a friction-ellipse coupling — throttle reduces rear lateral
+grip, so power-oversteer (and therefore drifting) is real in this model.
+Two PPO agents are trained: a **grip** agent that should lap at the
+analytic traction limit (a physics sanity check), and a **drift** agent
+rewarded for slip angle. A pygame chase-view game lets you drive the same
+physics yourself.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `drift_env.py` | `DriftEnv` — custom `gymnasium.Env` (physics, track errors, reward) |
-| `train.py` | Trains PPO for 500k steps; saves `models/best_model.zip` via `EvalCallback` |
-| `evaluate.py` | Rolls out the trained policy: live animation + diagnostic plots |
-| `report/report.tex` | Minimal LaTeX report (model, environment, results) |
+| `track.py` | Track geometry: circle or random bounded-curvature tracks, track-frame errors |
+| `drift_env.py` | `DriftEnv` (`gymnasium.Env`): physics, reward modes `grip`/`drift`, + `analytic_grip_limit()` |
+| `train.py` | PPO training; saves `models/<mode>_<track>/best_model.zip` |
+| `evaluate.py` | Rollout of a trained agent: live animation, diagnostic figures, instability demo |
+| `game.py` | Playable pygame game (manual or `--demo` agent driving) |
+| `report/report.tex` | LaTeX report (model → grip baseline → drift agent → game) |
 
-## Usage
+## Setup
 
-All commands assume the `gncnet` conda environment:
+Everything runs in the `gncnet` conda environment
+(gymnasium, stable-baselines3, torch, matplotlib, pygame):
 
 ```bash
 conda activate gncnet
-
-# train (≈10 min on CPU; logs to logs/, models to models/)
-python train.py
-
-# evaluate with live animation; also saves figures to report/figures/
-python evaluate.py
-
-# headless: only generate the figures and episode statistics
-python evaluate.py --no-anim
 ```
+
+## Play the game
+
+```bash
+python game.py                          # circular track
+python game.py --track random           # random track (new layout each restart)
+python game.py --track random --seed 7  # reproducible layout
+python game.py --demo                   # watch the trained drift agent
+```
+
+Arrow keys drive (left/right steer, up/down throttle/brake) through a
+first-order lag, so holding a key ramps the input rather than snapping it.
+`R` restarts, `ESC` quits. The camera points along the velocity vector, so
+the visual angle between the car body and "up" is the slip angle.
+
+## Train and evaluate
+
+```bash
+python train.py --mode grip      # traction-limit baseline (~10 min, CPU)
+python train.py --mode drift     # drift agent
+python evaluate.py --mode grip --no-anim    # figures + stats, headless
+python evaluate.py --mode drift             # with live animation
+python evaluate.py --instability            # open-loop sensitivity figure
+```
+
+`evaluate.py` prints the analytic traction limit next to the grip agent's
+achieved speed, and writes all report figures to `report/figures/`.
 
 ## Compiling the report
 
-`evaluate.py` must be run first so that `report/figures/` contains
-`trajectory.pdf`, `phase_portrait.pdf`, and `histories.pdf`. Then:
+Generate the figures first (`--instability` plus both `evaluate.py` modes),
+then:
 
 ```bash
 cd report
-pdflatex report.tex
-pdflatex report.tex   # second pass resolves figure references
+pdflatex report.tex && pdflatex report.tex
 ```
 
 Output: `report/report.pdf`.

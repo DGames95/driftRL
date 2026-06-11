@@ -1,8 +1,11 @@
-"""Evaluate the trained policy: live 2D animation + post-run diagnostic plots.
+"""Evaluate a trained policy: live animation + diagnostic plots.
 
 Usage:
-    python evaluate.py            # live animation + plots
-    python evaluate.py --no-anim  # headless: only save plots to report/figures/
+    python evaluate.py --mode drift               # live animation + plots
+    python evaluate.py --mode grip --no-anim      # headless, plots only
+    python evaluate.py --mode drift --track random
+    python evaluate.py --instability              # open-loop sensitivity figure
+Figures go to report/figures/ prefixed by <mode>_<track>.
 """
 
 import argparse
@@ -12,16 +15,15 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
-from stable_baselines3 import PPO
 
-from drift_env import DriftEnv
+from drift_env import DriftEnv, analytic_grip_limit
 
 FIG_DIR = "report/figures"
 CAR_L, CAR_W = 4.0, 1.8  # drawn car footprint [m]
 
 
-def run_episode(model, env, deterministic=True):
-    obs, _ = env.reset(seed=0)
+def run_episode(model, env, seed=0, deterministic=True):
+    obs, _ = env.reset(seed=seed)
     log = []
     done = False
     while not done:
@@ -37,20 +39,21 @@ def car_corners(x, y, psi):
     base = np.array([[CAR_L / 2, CAR_W / 2], [CAR_L / 2, -CAR_W / 2],
                      [-CAR_L / 2, -CAR_W / 2], [-CAR_L / 2, CAR_W / 2]])
     c, s = np.cos(psi), np.sin(psi)
-    R = np.array([[c, -s], [s, c]])
-    return base @ R.T + np.array([x, y])
+    return base @ np.array([[c, s], [-s, c]]) + np.array([x, y])
+
+
+def draw_track(ax, track):
+    for line in (track.left, track.right):
+        pts = np.vstack([line, line[:1]]) if track.closed else line
+        ax.plot(pts[:, 0], pts[:, 1], "k-", lw=0.8)
+    ax.plot(track.xy[:, 0], track.xy[:, 1], "k--", lw=0.4, alpha=0.5)
+    ax.set_aspect("equal")
 
 
 def animate(log, env):
     fig, ax = plt.subplots(figsize=(7, 7))
-    th = np.linspace(0, 2 * np.pi, 200)
-    for rad in (env.TRACK_R - env.TRACK_HALF_W, env.TRACK_R + env.TRACK_HALF_W):
-        ax.plot(rad * np.cos(th), rad * np.sin(th), "k-")
-    ax.plot(env.TRACK_R * np.cos(th), env.TRACK_R * np.sin(th), "k--", lw=0.5)
-    lim = env.TRACK_R + env.TRACK_HALF_W + 5
-    ax.set_xlim(-lim, lim); ax.set_ylim(-lim, lim)
-    ax.set_aspect("equal"); ax.set_title("DriftEnv rollout (arrow = velocity)")
-
+    draw_track(ax, env.track)
+    ax.set_title("DriftEnv rollout (arrow = velocity)")
     car = Polygon(car_corners(log["x"][0], log["y"][0], log["psi"][0]),
                   closed=True, fc="tab:blue", ec="k")
     ax.add_patch(car)
@@ -65,7 +68,6 @@ def animate(log, env):
         vx, vy, beta = log["vx"][i], log["vy"][i], log["beta"][i]
         car.set_xy(car_corners(x, y, psi))
         trail.set_data(log["x"][:i], log["y"][:i])
-        # velocity vector in global frame
         vgx = vx * np.cos(psi) - vy * np.sin(psi)
         vgy = vx * np.sin(psi) + vy * np.cos(psi)
         arrow.set_position((x, y))
@@ -76,60 +78,111 @@ def animate(log, env):
     plt.ioff(); plt.show()
 
 
-def diagnostics(log, env):
+def diagnostics(log, env, prefix):
     os.makedirs(FIG_DIR, exist_ok=True)
     t = np.arange(len(log["x"])) * env.DT
 
-    # trajectory
     fig, ax = plt.subplots(figsize=(5, 5))
-    th = np.linspace(0, 2 * np.pi, 200)
-    for rad in (env.TRACK_R - env.TRACK_HALF_W, env.TRACK_R + env.TRACK_HALF_W):
-        ax.plot(rad * np.cos(th), rad * np.sin(th), "k-", lw=0.8)
+    draw_track(ax, env.track)
     ax.plot(log["x"], log["y"], "tab:blue", lw=1)
-    ax.set_aspect("equal"); ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
-    ax.set_title("Trajectory")
-    fig.tight_layout(); fig.savefig(f"{FIG_DIR}/trajectory.pdf"); plt.close(fig)
+    ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]"); ax.set_title("Trajectory")
+    fig.tight_layout(); fig.savefig(f"{FIG_DIR}/{prefix}_trajectory.pdf"); plt.close(fig)
 
-    # phase portrait v_y vs r
     fig, ax = plt.subplots(figsize=(5, 4))
     ax.plot(log["vy"], log["r"], lw=0.8)
     ax.scatter(log["vy"][0], log["r"][0], c="g", label="start", zorder=3)
     ax.scatter(log["vy"][-1], log["r"][-1], c="r", label="end", zorder=3)
     ax.set_xlabel(r"$v_y$ [m/s]"); ax.set_ylabel(r"$r$ [rad/s]")
     ax.set_title("Phase portrait"); ax.legend(); ax.grid(alpha=0.3)
-    fig.tight_layout(); fig.savefig(f"{FIG_DIR}/phase_portrait.pdf"); plt.close(fig)
+    fig.tight_layout(); fig.savefig(f"{FIG_DIR}/{prefix}_phase_portrait.pdf"); plt.close(fig)
 
-    # slip angle + states history
     fig, axs = plt.subplots(3, 1, figsize=(6, 6), sharex=True)
     axs[0].plot(t, np.degrees(log["beta"])); axs[0].set_ylabel(r"$\beta$ [deg]")
     axs[1].plot(t, log["vx"], label=r"$v_x$"); axs[1].plot(t, log["vy"], label=r"$v_y$")
     axs[1].set_ylabel("[m/s]"); axs[1].legend()
     axs[2].plot(t, log["e_y"], label=r"$e_y$ [m]")
     axs[2].plot(t, np.degrees(log["delta"]), label=r"$\delta$ [deg]")
-    axs[2].set_ylabel(""); axs[2].set_xlabel("t [s]"); axs[2].legend()
+    axs[2].plot(t, 10 * log["T"], label=r"$10\,T$")
+    axs[2].set_xlabel("t [s]"); axs[2].legend(ncol=3, fontsize=8)
     for a in axs:
         a.grid(alpha=0.3)
     axs[0].set_title("Slip angle and state histories")
-    fig.tight_layout(); fig.savefig(f"{FIG_DIR}/histories.pdf"); plt.close(fig)
+    fig.tight_layout(); fig.savefig(f"{FIG_DIR}/{prefix}_histories.pdf"); plt.close(fig)
 
-    print(f"Episode: {len(t)} steps ({t[-1]:.1f} s), return = {log['reward'].sum():.1f}")
-    print(f"mean |beta| = {np.degrees(np.abs(log['beta']).mean()):.1f} deg, "
+    print(f"[{prefix}] {len(t)} steps ({t[-1]:.1f} s), return = {log['reward'].sum():.1f}, "
+          f"finished = {bool(log['finished'][-1])}")
+    n4 = len(t) // 4
+    print(f"  mean |beta| = {np.degrees(np.abs(log['beta']).mean()):.1f} deg "
+          f"(settled {np.degrees(np.abs(log['beta'][n4:]).mean()):.1f}, "
+          f"max {np.degrees(np.abs(log['beta']).max()):.1f}), "
           f"mean |e_y| = {np.abs(log['e_y']).mean():.2f} m")
-    print(f"Figures saved to {FIG_DIR}/")
+    print(f"  vx settled mean = {log['vx'][n4:].mean():.2f} m/s, max = {log['vx'].max():.2f}")
+    if env.mode == "grip" and env.track_type == "circle":
+        print(f"  analytic traction limit at R = {env.circle_radius:.0f} m: "
+              f"{analytic_grip_limit(env.circle_radius):.2f} m/s")
+
+
+def instability_demo():
+    """Open-loop sensitivity figure: constant inputs vs added 0.5 s throttle stab."""
+    os.makedirs(FIG_DIR, exist_ok=True)
+    env = DriftEnv()
+    runs = {}
+    stab_lo, stab_hi = 300, 325  # 0.5 s full-throttle window at t = 6 s
+    for stab in (False, True):
+        env.reset(seed=0)
+        traj, betas = [], []
+        for k in range(600):
+            # delta = 0.09, T = 0.10 holds a quasi-steady circle for > 20 s
+            T = 1.0 if (stab and stab_lo <= k < stab_hi) else 0.10
+            _, _, term, trunc, info = env.step(np.array([0.09, T]))
+            traj.append([info["x"], info["y"]]); betas.append(info["beta"])
+            if term:
+                break
+        runs[stab] = (np.array(traj), np.degrees(np.array(betas)))
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 4))
+    draw_track(ax1, env.track)
+    for stab, (traj, _), in runs.items():
+        lbl = "0.5 s full-throttle stab" if stab else "constant inputs"
+        ax1.plot(traj[:, 0], traj[:, 1], lw=1.2, label=lbl)
+    ax1.set_xlabel("x [m]"); ax1.set_ylabel("y [m]"); ax1.legend(fontsize=8)
+    for stab, (_, betas) in runs.items():
+        t = np.arange(len(betas)) * env.DT
+        ax2.plot(t, betas, lw=1.2,
+                 label="stab" if stab else "constant")
+    ax2.axvspan(stab_lo * env.DT, stab_hi * env.DT, color="r", alpha=0.15, label="stab window")
+    ax2.set_xlabel("t [s]"); ax2.set_ylabel(r"$\beta$ [deg]")
+    ax2.legend(fontsize=8); ax2.grid(alpha=0.3)
+    fig.suptitle(r"Open loop: fixed $\delta = 0.09$, $T = 0.10$, with/without throttle stab")
+    fig.tight_layout(); fig.savefig(f"{FIG_DIR}/instability.pdf"); plt.close(fig)
+    for stab, (traj, betas) in runs.items():
+        print(f"stab={stab}: survived {len(betas) * env.DT:.1f} s, "
+              f"final |beta| = {abs(betas[-1]):.1f} deg")
+    print(f"Saved {FIG_DIR}/instability.pdf")
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--model", default="models/best_model")
+    p.add_argument("--mode", choices=["drift", "grip"], default="drift")
+    p.add_argument("--track", choices=["circle", "random"], default="circle")
+    p.add_argument("--model", default=None)
+    p.add_argument("--seed", type=int, default=0)
     p.add_argument("--no-anim", action="store_true")
+    p.add_argument("--instability", action="store_true")
     args = p.parse_args()
 
-    if args.no_anim:
+    if args.no_anim or args.instability:
         matplotlib.use("Agg")
 
-    env = DriftEnv()
-    model = PPO.load(args.model, device="cpu")
-    log = run_episode(model, env)
-    diagnostics(log, env)
+    if args.instability:
+        instability_demo()
+        raise SystemExit
+
+    from stable_baselines3 import PPO
+    model_path = args.model or f"models/{args.mode}_circle/best_model"
+    env = DriftEnv(mode=args.mode, track_type=args.track)
+    model = PPO.load(model_path, device="cpu")
+    log = run_episode(model, env, seed=args.seed)
+    diagnostics(log, env, prefix=f"{args.mode}_{args.track}")
     if not args.no_anim:
         animate(log, env)

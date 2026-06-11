@@ -1,4 +1,13 @@
-"""Train PPO on DriftEnv and save the best model to models/best_model.zip."""
+"""Train PPO on DriftEnv.
+
+Usage:
+    python train.py --mode drift            # drift agent (default)
+    python train.py --mode grip             # grip-limit baseline
+    python train.py --mode drift --track random
+Models are saved to models/<mode>_<track>/best_model.zip.
+"""
+
+import argparse
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback
@@ -6,15 +15,20 @@ from stable_baselines3.common.monitor import Monitor
 
 from drift_env import DriftEnv
 
-TOTAL_TIMESTEPS = 500_000
-
 if __name__ == "__main__":
-    env = Monitor(DriftEnv())
-    eval_env = Monitor(DriftEnv())
+    p = argparse.ArgumentParser()
+    p.add_argument("--mode", choices=["drift", "grip"], default="drift")
+    p.add_argument("--track", choices=["circle", "random"], default="circle")
+    p.add_argument("--steps", type=int, default=500_000)
+    args = p.parse_args()
+
+    tag = f"{args.mode}_{args.track}"
+    env = Monitor(DriftEnv(mode=args.mode, track_type=args.track))
+    eval_env = Monitor(DriftEnv(mode=args.mode, track_type=args.track))
 
     eval_cb = EvalCallback(
         eval_env,
-        best_model_save_path="models",
+        best_model_save_path=f"models/{tag}",
         eval_freq=10_000,
         n_eval_episodes=5,
         deterministic=True,
@@ -30,6 +44,6 @@ if __name__ == "__main__":
         tensorboard_log="logs",
         device="cpu",  # MLP policies train faster on CPU than GPU in SB3
     )
-    model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=eval_cb)
-    model.save("models/final_model")
-    print("Done. Best model: models/best_model.zip")
+    model.learn(total_timesteps=args.steps, callback=eval_cb, tb_log_name=tag)
+    model.save(f"models/{tag}/final_model")
+    print(f"Done. Best model: models/{tag}/best_model.zip")

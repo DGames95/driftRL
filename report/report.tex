@@ -5,7 +5,8 @@
 \usepackage{booktabs}
 \graphicspath{{figures/}}
 
-\title{RL Drift Controller on a 3-DOF Bicycle Model}
+\title{A Toy Drifting Game: RL on a 3-DOF Bicycle Model\\
+\large from grip-limit driving to learned drifting}
 \author{}
 \date{\today}
 
@@ -13,8 +14,8 @@
 \maketitle
 
 \section{Vehicle model}
-The simulation uses a 3-DOF single-track (bicycle) model with body-frame
-states $(v_x, v_y, r)$ and global pose $(x, y, \psi)$:
+The car is a 3-DOF single-track (bicycle) model with body-frame states
+$(v_x, v_y, r)$ and global pose $(x, y, \psi)$:
 \begin{align}
 \dot{v}_x &= \tfrac{1}{m}\left(F_x - F_{y,f}\sin\delta\right) + r\,v_y, &
 \dot{v}_y &= \tfrac{1}{m}\left(F_{y,f}\cos\delta + F_{y,r}\right) - r\,v_x, \\
@@ -23,7 +24,7 @@ states $(v_x, v_y, r)$ and global pose $(x, y, \psi)$:
 \end{align}
 with $\dot{x} = v_x\cos\psi - v_y\sin\psi$ and
 $\dot{y} = v_x\sin\psi + v_y\cos\psi$.
-Lateral tire forces use a linear model with $\tanh$ saturation,
+Lateral tire forces are linear with $\tanh$ saturation,
 \begin{equation}
 F_{y,i} = -F_{y,\max,i}\,\tanh\!\left(\frac{C_{\alpha,i}\,\alpha_i}{F_{y,\max,i}}\right),
 \qquad
@@ -31,20 +32,20 @@ F_{y,i} = -F_{y,\max,i}\,\tanh\!\left(\frac{C_{\alpha,i}\,\alpha_i}{F_{y,\max,i}
 \quad
 \alpha_r = \arctan\!\frac{v_y - l_r r}{v_x},
 \end{equation}
-where $F_{y,\max,i} = \mu F_{z,i}$ uses the static axle loads.
-The throttle command produces a rear-axle longitudinal tire force capped at
-the friction limit, $F_{x,r} = \mathrm{clip}(T\,F_{\mathrm{drive,max}},
-\pm\mu F_{z,r})$, and the total longitudinal force includes quadratic drag,
-$F_x = F_{x,r} - c_d\,v_x|v_x|$. A friction-ellipse coupling reduces the
-rear lateral saturation limit with longitudinal force use:
+where $F_{y,\max,i} = \mu F_{z,i}$ uses the static axle loads. The throttle
+command produces a rear-axle longitudinal force capped at the friction
+limit, $F_{x,r} = \mathrm{clip}(T\,F_{\mathrm{drive,max}}, \pm\mu F_{z,r})$,
+and a friction-ellipse coupling shrinks the rear lateral limit as
+longitudinal force is used:
 \begin{equation}
 F_{y,\max,r}^{\mathrm{eff}} = F_{y,\max,r}
-\sqrt{\max\!\left(1 - \left(\frac{F_{x,r}}{\mu F_{z,r}}\right)^{2},\;
-10^{-3}\right)},
+\sqrt{1 - \left(\frac{F_{x,r}}{\mu F_{z,r}}\right)^{2}}.
+\label{eq:ellipse}
 \end{equation}
-and this effective limit replaces $F_{y,\max,r}$ in the rear tire equation.
-The front axle is undriven and uncoupled. Integration is explicit Euler
-with $\Delta t = 0.02$\,s.
+This coupling is what makes the model \emph{driftable}: opening the
+throttle directly removes rear lateral grip (power-oversteer). Total
+longitudinal force adds quadratic drag, $F_x = F_{x,r} - c_d v_x |v_x|$,
+and integration is explicit Euler with $\Delta t = 0.02$\,s.
 
 \begin{table}[h]\centering
 \caption{Model parameters.}
@@ -53,73 +54,141 @@ with $\Delta t = 0.02$\,s.
 $m$ & 1300\,kg & $C_{\alpha,f}=C_{\alpha,r}$ & 90\,000\,N/rad \\
 $I_z$ & 1800\,kg\,m$^2$ & $\mu$ & 0.9 \\
 $l_f$ / $l_r$ & 1.2\,m / 1.4\,m & $F_{\mathrm{drive,max}}$ & 8000\,N \\
-$c_d$ & 1.0\,N\,s$^2$/m$^2$ & track radius / half-width & 30\,m / 4\,m \\
+$c_d$ & 1.0\,N\,s$^2$/m$^2$ & track half-width & 4\,m \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\section{Environment}
-The Gymnasium environment \texttt{DriftEnv} exposes the observation
-$[v_x, v_y, r, e_y, e_\psi]$, scaled elementwise by $[20, 10, 2, 4, \pi]$.
-The track is a counter-clockwise circle of radius 30\,m centred at the
-origin; $e_y$ is the signed radial offset from the centerline and $e_\psi$
-the heading error relative to the local tangent. The action is
-$[\delta, T]$ with $\delta \in [-0.5, 0.5]$\,rad and $T \in [-1, 1]$.
-Episodes start on the centerline with $v_x = 8 \pm 1$\,m/s and run at most
-1000 steps (20\,s). They terminate early, with an additional reward of
-$-400$, if $|e_y| > 4$\,m or $v_x < 1$\,m/s.
-
-The per-step reward is
-\begin{equation}
-R = v_x\cos e_\psi + w_1 |\beta| - w_2 e_y^2 - w_3 \dot{\delta}^2,
-\qquad \beta = \arctan\frac{v_y}{v_x},
-\end{equation}
-with $w_1 = 3.0$, $w_2 = 0.5$, $w_3 = 0.002$, and
-$\dot{\delta}$ the finite difference of consecutive steering commands.
-
-\section{Training}
-The policy is trained with Stable-Baselines3 PPO (\texttt{MlpPolicy},
-default two hidden layers of 64 units) for 500\,000 timesteps at a learning
-rate of $3\times10^{-4}$ and a discount factor $\gamma = 0.999$; all other
-hyperparameters are SB3 defaults. The discount factor was raised from the
-default $0.99$ so that the value horizon ($\approx 1/(1-\gamma)$ steps)
-covers the full 20\,s episode; with $\gamma = 0.99$ and a $-50$ termination
-penalty, training converged to a full-throttle policy that left the track
-after 3.7\,s. An
-\texttt{EvalCallback} evaluates the policy every 10\,000 steps on 5
-deterministic episodes and stores the best model.
-
-\section{Results}
-A single deterministic episode of the best saved model was rolled out from
-a fixed seed. The episode ran the full 1000 steps (20.0\,s, no early
-termination) with a return of 13914, covering 1.5 laps. The mean absolute
-slip angle was $6.7^\circ$ ($6.9^\circ$ after the initial transient,
-maximum $15.7^\circ$) and the mean absolute lateral error 0.59\,m
-(maximum 1.86\,m). Longitudinal velocity settled at 14.4\,m/s on average.
-The throttle command varied between 0.26 and 0.82 (mean 0.43); the
-steering command had mean $16.8^\circ$ with standard deviation
-$14.8^\circ$.
-Figure~\ref{fig:traj} shows the driven path, Figure~\ref{fig:phase} the
-$v_y$--$r$ phase portrait, and Figure~\ref{fig:hist} the slip-angle,
-velocity, lateral-error, and steering histories.
+\paragraph{Why drifting is hard to control.}
+Figure~\ref{fig:instability} shows the open-loop sensitivity introduced by
+Eq.~\eqref{eq:ellipse}. Constant inputs ($\delta = 0.09$, $T = 0.10$)
+corner the 30\,m circle steadily for the full simulated horizon. Adding a
+single 0.5\,s full-throttle pulse to the otherwise identical run collapses
+the rear lateral limit, and the car departs to a slip angle of
+$83^\circ$ --- a spin --- within 1.5\,s, with no further input change.
+Beyond the grip limit the dynamics are open-loop unstable, which is what
+makes sustained drifting a genuinely closed-loop control problem.
 
 \begin{figure}[h]\centering
-\includegraphics[width=0.55\textwidth]{trajectory.pdf}
-\caption{Vehicle trajectory (blue) and track boundaries (black).}
-\label{fig:traj}
+\includegraphics[width=0.95\textwidth]{instability.pdf}
+\caption{Open-loop throttle-stab experiment: trajectories (left) and slip
+angle (right) with and without a 0.5\,s full-throttle pulse.}
+\label{fig:instability}
+\end{figure}
+
+\section{Environment}
+\texttt{DriftEnv} (Gymnasium) exposes the observation
+$[v_x, v_y, r, e_y, e_\psi, \kappa_0, \kappa_{10}, \kappa_{25}]$:
+body velocities and yaw rate, signed lateral offset from the track
+centerline ($e_y > 0$ left), heading error to the local tangent, and the
+centerline curvature 0, 10 and 25\,m ahead. Actions are
+$[\delta, T]$, $\delta \in [-0.5, 0.5]$\,rad, $T \in [-1, 1]$.
+
+Two track types share the same sampled-centerline machinery
+(\texttt{track.py}): a circle of radius 30\,m, and random open tracks of
+500\,m whose curvature is a piecewise-linear profile through random knots
+spaced 30--80\,m apart with magnitudes bounded in
+$[1/60, 1/22]\,\mathrm{m}^{-1}$ (corner radii 22--60\,m) and random sign.
+Random tracks regenerate every episode.
+
+Episodes start at 8\,m/s on the centerline, run at most 1000 steps (20\,s),
+and terminate with an additional $-400$ reward if $|e_y| > 4$\,m or
+$v_x < 1$\,m/s. The per-step reward shares a base term and differs only in
+how slip is treated:
+\begin{equation}
+R = v_x\cos e_\psi - 0.5\,e_y^2 - 0.002\,\dot{\delta}^2 +
+\begin{cases}
++3.0\,|\beta| & \text{drift mode},\\[2pt]
+-50\,\beta^2 & \text{grip mode},
+\end{cases}
+\qquad \beta = \arctan\frac{v_y}{v_x}.
+\end{equation}
+
+Both agents are trained with Stable-Baselines3 PPO (\texttt{MlpPolicy},
+$3\times10^{-4}$ learning rate, $\gamma = 0.999$, otherwise defaults) for
+500\,000 steps on the circular track; an \texttt{EvalCallback} keeps the
+best checkpoint. The discount factor is raised from the default 0.99
+because the shorter value horizon let a full-throttle policy that leaves
+the track after 3.7\,s appear optimal.
+
+\section{Grip baseline: validating the physics}
+\label{sec:grip}
+In grip mode the slip penalty makes the optimal behavior plain fast
+driving, which has a known answer to compare against. In steady-state
+cornering at radius $R$ both axles saturate simultaneously (the static
+load split makes the yaw moment balance exactly), and the rear must also
+supply the drag force through Eq.~\eqref{eq:ellipse}, giving
+\begin{equation}
+v_{\max}^4\left[\left(\frac{m}{R}\right)^2 +
+\left(\frac{c_d L}{l_f}\right)^2\right] = (\mu m g)^2
+\;\;\Rightarrow\;\;
+v_{\max} = 16.26\;\mathrm{m/s} \;\;\text{at } R = 30\,\mathrm{m},
+\end{equation}
+within 0.1\% of the drag-free $\sqrt{\mu g R} = 16.27$\,m/s.
+
+The trained grip agent laps the circle for the full 20\,s episode
+(return 13001) with the slip angle never exceeding $7.4^\circ$.
+Longitudinal velocity settles at 14.8\,m/s and peaks at 15.7\,m/s,
+approaching but never exceeding the analytic limit --- the learned policy
+recovers the traction limit of the model to within $\sim$9\% (settled)
+without being told it.
+Figure~\ref{fig:grip} shows the trajectory and state histories.
+
+\begin{figure}[h]\centering
+\includegraphics[width=0.42\textwidth]{grip_circle_trajectory.pdf}
+\includegraphics[width=0.52\textwidth]{grip_circle_histories.pdf}
+\caption{Grip agent on the circular track: trajectory (left), slip angle,
+velocities and commands (right).}
+\label{fig:grip}
+\end{figure}
+
+\section{Drift agent}
+With the slip reward, the learned behavior changes qualitatively. Across
+eight evaluation seeds, six episodes run the full 20\,s with returns
+between 11\,600 and 12\,400 and settled mean slip angles of
+$5.7$--$9.4^\circ$ (the remaining two leave the track at 13.0 and 15.0\,s).
+The representative episode shown (seed 3, return 12419) holds a settled
+mean slip angle of $7.6^\circ$ with peaks of $20.4^\circ$ at
+14.1\,m/s average speed over 1.5 laps. The throttle is actively modulated
+between 0.11 and 0.85 (mean 0.38) rather than held constant --- the agent
+uses the friction-ellipse coupling of Eq.~\eqref{eq:ellipse} as a control
+input. The phase portrait (Figure~\ref{fig:phase}) shows the slip is
+sustained as a recurring drift--catch--drift cycle, with steering swinging
+repeatedly to the $+0.5$\,rad lock, rather than a steady-state drift
+equilibrium.
+
+\begin{figure}[h]\centering
+\includegraphics[width=0.42\textwidth]{drift_circle_trajectory.pdf}
+\includegraphics[width=0.52\textwidth]{drift_circle_histories.pdf}
+\caption{Drift agent on the circular track: trajectory (left), slip angle,
+velocities and commands (right).}
+\label{fig:drift}
 \end{figure}
 
 \begin{figure}[h]\centering
-\includegraphics[width=0.55\textwidth]{phase_portrait.pdf}
-\caption{Phase portrait of $v_y$ versus yaw rate $r$.}
+\includegraphics[width=0.5\textwidth]{drift_circle_phase_portrait.pdf}
+\caption{Drift agent phase portrait ($v_y$ vs.\ $r$): the recurring loop is
+a drift--catch--drift limit cycle rather than a steady-state equilibrium.}
 \label{fig:phase}
 \end{figure}
 
+\section{Manual play}
+The same environment is playable as a top-down game (\texttt{game.py},
+pygame, 50\,Hz real-time). The camera is a chase view aligned with the
+velocity vector, so the angle between the car body and screen-up is the
+slip angle. Arrow keys command steering and throttle through first-order
+lags ($\tau = 0.12$\,s and $0.25$\,s), mimicking analog inputs. Both track
+types are playable; random tracks regenerate on restart, and the trained
+drift agent can drive in the same view (\texttt{--demo}) for side-by-side
+comparison. The qualitative behaviors of Section~\ref{sec:grip} are
+reproducible by hand: lifting or stabbing the throttle mid-corner visibly
+rotates the car, holding it spins out, and modest countersteer catches the
+slide.
+
 \begin{figure}[h]\centering
-\includegraphics[width=0.7\textwidth]{histories.pdf}
-\caption{Time histories of slip angle $\beta$, body velocities, lateral
-error $e_y$, and steering angle $\delta$.}
-\label{fig:hist}
+\includegraphics[width=0.6\textwidth]{game.png}
+\caption{Chase-view game (trained drift agent driving).}
+\label{fig:game}
 \end{figure}
 
 \end{document}
