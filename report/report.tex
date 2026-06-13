@@ -3,9 +3,10 @@
 \usepackage{amsmath}
 \usepackage{graphicx}
 \usepackage{booktabs}
+\usepackage{enumitem}
 \graphicspath{{figures/}}
 
-\title{A Toy Drifting Game: RL on a 3-DOF Bicycle Model\\
+\title{RL on a 3-DOF Bicycle Model\\
 \large from grip-limit driving to learned drifting}
 \author{}
 \date{\today}
@@ -14,38 +15,55 @@
 \maketitle
 
 \section{Vehicle model}
-The car is a 3-DOF single-track (bicycle) model with body-frame states
-$(v_x, v_y, r)$ and global pose $(x, y, \psi)$:
+The car is a 3-DOF single-track (bicycle) model. Equations of motion:
+
 \begin{align}
-\dot{v}_x &= \tfrac{1}{m}\left(F_x - F_{y,f}\sin\delta\right) + r\,v_y, &
-\dot{v}_y &= \tfrac{1}{m}\left(F_{y,f}\cos\delta + F_{y,r}\right) - r\,v_x, \\
-\dot{r}  &= \tfrac{1}{I_z}\left(l_f F_{y,f}\cos\delta - l_r F_{y,r}\right), &
-\dot{\psi} &= r,
+\dot{v}_x &= \tfrac{1}{m}\bigl(F_x - F_{y,f}\sin\delta\bigr) + r\,v_y \\
+\dot{v}_y &= \tfrac{1}{m}\bigl(F_{y,f}\cos\delta + F_{y,r}\bigr) - r\,v_x \\
+\dot{r}   &= \tfrac{1}{I_z}\bigl(l_f F_{y,f}\cos\delta - l_r F_{y,r}\bigr) \\
+\dot{\psi} &= r \\
+\dot{x}   &= v_x\cos\psi - v_y\sin\psi \\
+\dot{y}   &= v_x\sin\psi + v_y\cos\psi
 \end{align}
-with $\dot{x} = v_x\cos\psi - v_y\sin\psi$ and
-$\dot{y} = v_x\sin\psi + v_y\cos\psi$.
-Lateral tire forces are linear with $\tanh$ saturation,
+
+\begin{description}[nosep, itemsep=2pt]
+\item[$v_x,\;v_y,\;r$] longitudinal velocity, lateral velocity, yaw rate (body frame)
+\item[$x,\;y,\;\psi$] global position and heading
+\item[$m,\;I_z$] vehicle mass, yaw inertia
+\item[$l_f,\;l_r$] CG-to-front/rear-axle distance
+\item[$\delta$] front road-wheel steering angle
+\item[$F_{y,f},\;F_{y,r}$] front/rear lateral tire forces
+\item[$F_x$] net rear-axle longitudinal force
+\end{description}
+
+Lateral tire forces use a linear model saturated by $\tanh$:
 \begin{equation}
 F_{y,i} = -F_{y,\max,i}\,\tanh\!\left(\frac{C_{\alpha,i}\,\alpha_i}{F_{y,\max,i}}\right),
 \qquad
 \alpha_f = \arctan\!\frac{v_y + l_f r}{v_x} - \delta,
 \quad
-\alpha_r = \arctan\!\frac{v_y - l_r r}{v_x},
+\alpha_r = \arctan\!\frac{v_y - l_r r}{v_x}
 \end{equation}
-where $F_{y,\max,i} = \mu F_{z,i}$ uses the static axle loads. The throttle
-command produces a rear-axle longitudinal force capped at the friction
-limit, $F_{x,r} = \mathrm{clip}(T\,F_{\mathrm{drive,max}}, \pm\mu F_{z,r})$,
-and a friction-ellipse coupling shrinks the rear lateral limit as
-longitudinal force is used:
+
+\begin{description}[nosep, itemsep=2pt]
+\item[$\alpha_i$] tire slip angle --- angle between wheel heading and its velocity vector
+\item[$C_{\alpha,i}$] linear cornering stiffness
+\item[$F_{y,\max,i} = \mu F_{z,i}$] friction-limited peak lateral force ($\mu$ road friction, $F_{z,i}$ static axle load)
+\end{description}
+
+The throttle command $T\in[-1,1]$ drives the rear axle, capped at the friction circle:
+\[
+F_{x,r} = \mathrm{clip}\!\left(T\,F_{\mathrm{drive,max}},\;\pm\mu F_{z,r}\right)
+\]
+A friction-ellipse coupling then shrinks the rear lateral limit as longitudinal force is used:
 \begin{equation}
 F_{y,\max,r}^{\mathrm{eff}} = F_{y,\max,r}
 \sqrt{1 - \left(\frac{F_{x,r}}{\mu F_{z,r}}\right)^{2}}.
 \label{eq:ellipse}
 \end{equation}
-This coupling is what makes the model \emph{driftable}: opening the
-throttle directly removes rear lateral grip (power-oversteer). Total
-longitudinal force adds quadratic drag, $F_x = F_{x,r} - c_d v_x |v_x|$,
-and integration is explicit Euler with $\Delta t = 0.02$\,s.
+This is what makes the model \emph{driftable}: opening the throttle directly removes rear
+lateral grip (power-oversteer). Net longitudinal force adds quadratic drag,
+$F_x = F_{x,r} - c_d v_x |v_x|$, and integration is explicit Euler with $\Delta t = 0.02$\,s.
 
 \begin{table}[h]\centering
 \caption{Model parameters.}
