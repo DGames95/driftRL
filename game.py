@@ -10,6 +10,7 @@ Usage:
     python game.py                          # circular track
     python game.py --track random           # random track, new layout per run
     python game.py --track random --seed 7  # reproducible first layout
+    python game.py --mode grip              # HUD shows grip reward shaping
     python game.py --demo                   # trained drift agent plays instead
     python game.py --demo --screenshot report/figures/game.png
 """
@@ -54,9 +55,11 @@ def car_polygon(x, y, psi):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--track", choices=["circle", "random"], default="circle")
+    p.add_argument("--mode", choices=["drift", "grip"], default="drift",
+                   help="reward shaping shown in the HUD")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--demo", action="store_true", help="trained agent drives")
-    p.add_argument("--model", default="models/drift_circle/best_model")
+    p.add_argument("--model", default="models/grip_random/best_model")
     p.add_argument("--screenshot", default=None, help="save a frame and exit")
     args = p.parse_args()
 
@@ -72,9 +75,10 @@ def main():
     font = pygame.font.SysFont("monospace", 16)
     big = pygame.font.SysFont("monospace", 36, bold=True)
 
-    env = DriftEnv(mode="drift", track_type=args.track)
+    env = DriftEnv(mode=args.mode, track_type=args.track)
     obs, _ = env.reset(seed=args.seed)
     delta, T, score = 0.0, 0.0, 0.0
+    terms, cum = {}, {}          # last-step reward components and their totals
     cam_ang = env.state[2]
     over_msg = None
     frame = 0
@@ -90,6 +94,7 @@ def main():
                 if ev.key == pygame.K_r:
                     obs, _ = env.reset()
                     delta, T, score, over_msg = 0.0, 0.0, 0.0, None
+                    terms, cum = {}, {}
                     cam_ang = env.state[2]
 
         # ---------------- input -> action (first-order lag on key targets)
@@ -105,6 +110,9 @@ def main():
                 T += (thr_t - T) * env.DT / TAU_THR
             obs, reward, term, trunc, info = env.step(np.array([delta, T]))
             score += reward
+            terms = info["reward_terms"]
+            for k, v in terms.items():
+                cum[k] = cum.get(k, 0.0) + v
             if term:
                 over_msg = "OFF TRACK  -  press R"
             elif info["finished"]:
@@ -144,6 +152,22 @@ def main():
                f"score {score:8.1f}   t {env.steps * env.DT:5.1f} s"]
         for i, line in enumerate(hud):
             screen.blit(font.render(line, True, (230, 230, 230)), (10, 10 + 20 * i))
+
+        # ---------------- live reward breakdown: per-step value and running total
+        beta_lbl = "+|beta|" if args.mode == "drift" else "-beta^2"
+        labels = {"vx": "vx*cos", "e_y": "-e_y^2", "d_delta": "-ddot^2",
+                  "beta": beta_lbl, "term": "OFFTRACK"}
+        y0 = 10 + 20 * len(hud) + 8
+        screen.blit(font.render(f"reward [{args.mode}]      now     total",
+                                True, (200, 200, 120)), (10, y0))
+        for j, k in enumerate(labels):
+            if k not in terms and k not in cum:
+                continue
+            now, tot = terms.get(k, 0.0), cum.get(k, 0.0)
+            col = (120, 220, 120) if now >= 0 else (235, 130, 130)
+            line = f"  {labels[k]:8s} {now:+8.2f} {tot:+9.1f}"
+            screen.blit(font.render(line, True, col), (10, y0 + 18 * (j + 1)))
+
         screen.blit(font.render("arrows: drive   R: restart   ESC: quit",
                                 True, (140, 140, 140)), (10, SCREEN_H - 26))
         if over_msg:
