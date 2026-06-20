@@ -15,6 +15,8 @@
 \maketitle
 
 \section{Vehicle model}
+
+\subsection{Equations of motion}
 The car is a 3-DOF single-track (bicycle) model. Equations of motion:
 
 \begin{align}
@@ -36,6 +38,7 @@ The car is a 3-DOF single-track (bicycle) model. Equations of motion:
 \item[$F_x$] net rear-axle longitudinal force
 \end{description}
 
+\subsection{Tire forces}
 Lateral tire forces use a linear model saturated by $\tanh$:
 \begin{equation}
 F_{y,i} = -F_{y,\max,i}\,\tanh\!\left(\frac{C_{\alpha,i}\,\alpha_i}{F_{y,\max,i}}\right),
@@ -51,6 +54,7 @@ F_{y,i} = -F_{y,\max,i}\,\tanh\!\left(\frac{C_{\alpha,i}\,\alpha_i}{F_{y,\max,i}
 \item[$F_{y,\max,i} = \mu F_{z,i}$] friction-limited peak lateral force ($\mu$ road friction, $F_{z,i}$ static axle load)
 \end{description}
 
+\subsection{Throttle and friction-ellipse coupling}
 The throttle command $T\in[-1,1]$ drives the rear axle, capped at the friction circle:
 \[
 F_{x,r} = \mathrm{clip}\!\left(T\,F_{\mathrm{drive,max}},\;\pm\mu F_{z,r}\right)
@@ -77,7 +81,7 @@ $c_d$ & 1.0\,N\,s$^2$/m$^2$ & track half-width & 4\,m \\
 \end{tabular}
 \end{table}
 
-\paragraph{Why drifting is hard to control.}
+\subsection{Open-loop instability}
 Figure~\ref{fig:instability} shows the open-loop sensitivity introduced by
 Eq.~\eqref{eq:ellipse}. Constant inputs ($\delta = 0.09$, $T = 0.10$)
 corner the 30\,m circle steadily for the full simulated horizon. Adding a
@@ -95,24 +99,30 @@ angle (right) with and without a 0.5\,s full-throttle pulse.}
 \end{figure}
 
 \section{Environment}
+
+\subsection{Observation and action space}
 \texttt{DriftEnv} (Gymnasium) exposes the observation
 $[v_x, v_y, r, e_y, e_\psi, \kappa_0, \kappa_{10}, \kappa_{25}]$:
 body velocities and yaw rate, signed lateral offset from the track
 centerline ($e_y > 0$ left), heading error to the local tangent, and the
 centerline curvature 0, 10 and 25\,m ahead. Actions are
 $[\delta, T]$, $\delta \in [-0.5, 0.5]$\,rad, $T \in [-1, 1]$.
+Episodes start at 8\,m/s on the centerline, run at most 1000 steps (20\,s),
+and terminate if $|e_y| > 4$\,m or $v_x < 1$\,m/s.
 
+\subsection{Track generation}
 Two track types share the same sampled-centerline machinery
 (\texttt{track.py}): a circle of radius 30\,m, and random open tracks of
 500\,m whose curvature is a piecewise-linear profile through random knots
 spaced 30--80\,m apart with magnitudes bounded in
 $[1/60, 1/22]\,\mathrm{m}^{-1}$ (corner radii 22--60\,m) and random sign.
-Random tracks regenerate every episode.
+Both have a half-width of 4\,m. Random tracks regenerate every episode, so
+the agent sees a fresh layout each rollout and cannot memorise a single
+course.
 
-Episodes start at 8\,m/s on the centerline, run at most 1000 steps (20\,s),
-and terminate with an additional $-400$ reward if $|e_y| > 4$\,m or
-$v_x < 1$\,m/s. The per-step reward shares a base term and differs only in
-how slip is treated:
+\subsection{Reward}
+The per-step reward shares a base term across both modes and differs only
+in how sideslip $\beta = \arctan(v_y/v_x)$ is treated:
 \begin{equation}
 R = v_x\cos e_\psi - 0.5\,e_y^2 - 0.002\,\dot{\delta}^2 +
 \begin{cases}
@@ -121,7 +131,25 @@ R = v_x\cos e_\psi - 0.5\,e_y^2 - 0.002\,\dot{\delta}^2 +
 \end{cases}
 \qquad \beta = \arctan\frac{v_y}{v_x}.
 \end{equation}
+Term by term:
+\begin{description}[nosep, itemsep=2pt]
+\item[$+v_x\cos e_\psi$] progress along the track --- rewards speed
+projected onto the centerline tangent, so heading the wrong way earns
+nothing.
+\item[$-0.5\,e_y^2$] lateral-offset penalty --- keeps the car near the
+centerline and grows quadratically toward the track edge.
+\item[$-0.002\,\dot{\delta}^2$] steering-rate penalty --- discourages
+chattering the steering and keeps the commanded inputs smooth.
+\item[$+3.0\,|\beta|$ (drift)] slip reward --- pays for sideslip
+magnitude, which is what drives the agent to hold the car sideways.
+\item[$-50\,\beta^2$ (grip)] slip penalty --- the opposite incentive,
+punishing any slip so the optimum is clean, grip-limited cornering.
+\item[$-400$ (terminal)] crash penalty --- applied once on termination
+($|e_y| > 4$\,m or $v_x < 1$\,m/s) to make leaving the track strongly
+unattractive.
+\end{description}
 
+\subsection{Training}
 Both agents are trained with Stable-Baselines3 PPO (\texttt{MlpPolicy},
 $3\times10^{-4}$ learning rate, $\gamma = 0.999$, otherwise defaults) for
 500\,000 steps on the circular track; an \texttt{EvalCallback} keeps the
