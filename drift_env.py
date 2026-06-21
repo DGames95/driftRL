@@ -40,10 +40,13 @@ class DriftEnv(gym.Env):
 
     # reward weights
     W_BETA_DRIFT = 3.0     # drift mode: reward |beta|
-    W_BETA_GRIP = 50.0     # grip mode: penalize beta^2
-    W_EY = 0.5
-    W_DDOT = 0.002
-    TERM_PENALTY = 400.0   # must outweigh speed reward accumulated before dying
+    W_BETA_GRIP = 10.0     # grip mode: penalize beta^2
+    W_PROG = 10.0            # reward per metre of centerline arc-length advanced
+    W_EY = 30.0
+    W_DDOT = 0.00001
+    W_SURVIVE = 2.0          # per-step living reward (dense "stay on track" signal)
+    TERM_PENALTY = 2000.0   # one-off penalty on leaving the track / stalling
+    W_FINISH = 500.0        # one-off bonus for reaching the end of the track
 
     OBS_SCALE = np.array([20.0, 10.0, 2.0, 4.0, np.pi, 0.05, 0.05, 0.05],
                          dtype=np.float32)
@@ -67,6 +70,7 @@ class DriftEnv(gym.Env):
         self.state = None       # [x, y, psi, vx, vy, r] global pose + body velocities
         self.prev_delta = 0.0
         self.track_idx = 0
+        self.prev_s = 0.0
         self.steps = 0
 
     def _get_obs(self):
@@ -74,6 +78,18 @@ class DriftEnv(gym.Env):
         e_y, e_psi, kprev, self.track_idx = self.track.frame(x, y, psi, self.track_idx)
         raw = np.concatenate([[vx, vy, r, e_y, e_psi], kprev]).astype(np.float32)
         return raw / self.OBS_SCALE, e_y, e_psi
+
+    def _arc_length(self):
+        """Continuous arc-length position of the car along the centerline.
+
+        Sub-sample resolution: nearest sample's s plus the car's projection
+        onto that sample's tangent (avoids the 0.5 m quantization of track_idx).
+        """
+        i = self.track_idx
+        x, y = self.state[0], self.state[1]
+        tang = np.array([np.cos(self.track.psi[i]), np.sin(self.track.psi[i])])
+        return self.track.s[i] + float(np.dot([x - self.track.xy[i, 0],
+                                               y - self.track.xy[i, 1]], tang))
 
     # ------------------------------------------------------------------ gym API
     def reset(self, seed=None, options=None):
@@ -91,6 +107,7 @@ class DriftEnv(gym.Env):
         self.track_idx = 0
         self.steps = 0
         obs, _, _ = self._get_obs()
+        self.prev_s = self._arc_length()
         return obs, {}
 
     def step(self, action):
@@ -134,26 +151,46 @@ class DriftEnv(gym.Env):
         obs, e_y, e_psi = self._get_obs()
         beta = np.arctan2(vy, max(vx, 0.5))
         delta_dot = (delta - self.prev_delta) / self.DT
-        reward = (vx * np.cos(e_psi)
-                  - self.W_EY * e_y ** 2
-                  - self.W_DDOT * delta_dot ** 2)
-        if self.mode == "drift":
-            reward += self.W_BETA_DRIFT * abs(beta)
-        else:
-            reward -= self.W_BETA_GRIP * beta ** 2
         self.prev_delta = delta
 
+        # centerline arc-length advanced this step (handles wrap on closed tracks)
+        s_now = self._arc_length()
+        ds = s_now - self.prev_s
+        if self.track.closed:
+            L = self.track.length
+            if ds < -L / 2:
+                ds += L
+            elif ds > L / 2:
+                ds -= L
+        self.prev_s = s_now
+
+        # reward as labeled components so callers (e.g. game.py HUD) can show
+        # what the shaping is actually paying for; reward == sum(terms).
+        terms = {
+            "progress": self.W_PROG * ds,
+            "e_y": -self.W_EY * e_y ** 2,
+            "d_delta": -self.W_DDOT * delta_dot ** 2,
+            "beta": (self.W_BETA_DRIFT * abs(beta) if self.mode == "drift"
+                     else -self.W_BETA_GRIP * beta ** 2),
+        }
+
         terminated = bool(abs(e_y) > self.track.half_width or vx < 1.0)
-        if terminated:
-            reward -= self.TERM_PENALTY
         finished = self.track.at_end(self.track_idx)
+        if terminated:
+            terms["term"] = -self.TERM_PENALTY
+        else:
+            terms["alive"] = self.W_SURVIVE   # paid each step the car stays on track
+        if finished:
+            terms["finish"] = self.W_FINISH   # one-off bonus for completing the track
+        reward = float(sum(terms.values()))
         truncated = self.steps >= self.MAX_STEPS or finished
 
         info = {"x": self.state[0], "y": self.state[1], "psi": self.state[2],
                 "vx": vx, "vy": vy, "r": self.state[5],
                 "e_y": e_y, "e_psi": e_psi, "beta": beta,
-                "delta": delta, "T": T, "finished": finished}
-        return obs, float(reward), terminated, truncated, info
+                "delta": delta, "T": T, "finished": finished,
+                "reward_terms": terms}
+        return obs, reward, terminated, truncated, info
 
 
 def analytic_grip_limit(radius, env_cls=DriftEnv):

@@ -155,8 +155,9 @@ def main():
 
         # ---------------- live reward breakdown: per-step value and running total
         beta_lbl = "+|beta|" if args.mode == "drift" else "-beta^2"
-        labels = {"vx": "vx*cos", "e_y": "-e_y^2", "d_delta": "-ddot^2",
-                  "beta": beta_lbl, "term": "OFFTRACK"}
+        labels = {"progress": "+prog", "e_y": "-e_y^2", "d_delta": "-ddot^2",
+                  "beta": beta_lbl, "alive": "+alive", "term": "OFFTRACK",
+                  "finish": "FINISH"}
         y0 = 10 + 20 * len(hud) + 8
         screen.blit(font.render(f"reward [{args.mode}]      now     total",
                                 True, (200, 200, 120)), (10, y0))

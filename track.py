@@ -14,7 +14,7 @@ direction); positive curvature turns left.
 import numpy as np
 
 DS = 0.5            # centerline sampling step [m]
-HALF_WIDTH = 4.0    # track half-width [m]
+HALF_WIDTH = 8.0    # track half-width [m]
 
 # random-track curvature bounds: corner radii between 22 m and 60 m,
 # tight enough to demand drifting at speed, wide enough to be drivable
