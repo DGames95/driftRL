@@ -28,8 +28,8 @@ class DriftEnv(gym.Env):
     IZ = 1800.0       # yaw inertia [kg m^2]
     LF = 1.2          # CoG -> front axle [m]
     LR = 1.4          # CoG -> rear axle [m]
-    CA_F = 90000.0    # front cornering stiffness [N/rad]
-    CA_R = 90000.0    # rear cornering stiffness [N/rad]
+    CA_F = 90000.0    # front cornering stiffness [N/rad] = CY_F
+    CA_R = 90000.0    # rear cornering stiffness [N/rad] = CY_R
     MU = 0.9          # friction coefficient
     G = 9.81
     F_DRIVE_MAX = 8000.0   # max rear longitudinal force demand (|T| = 1) [N]
