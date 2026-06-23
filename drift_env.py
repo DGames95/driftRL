@@ -48,8 +48,13 @@ class DriftEnv(gym.Env):
     TERM_PENALTY = 2000.0   # one-off penalty on leaving the track / stalling
     W_FINISH = 500.0        # one-off bonus for reaching the end of the track
 
-    OBS_SCALE = np.array([20.0, 10.0, 2.0, 4.0, np.pi, 0.05, 0.05, 0.05],
+    # observation normalization: scale to ~unit variance over the driving regime
+    # (operating spread, NOT physical max range) and offset the one input that is
+    # never near zero (vx). Fixed a-priori constants, identical for every policy.
+    OBS_SCALE = np.array([4.0, 1.0, 0.5, 1.5, 0.3, 0.05, 0.05, 0.05],
                          dtype=np.float32)
+    OBS_MEAN = np.array([11.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        dtype=np.float32)
 
     def __init__(self, mode="drift", track_type="circle", circle_radius=30.0):
         super().__init__()
