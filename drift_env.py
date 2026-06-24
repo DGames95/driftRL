@@ -53,8 +53,6 @@ class DriftEnv(gym.Env):
     # never near zero (vx). Fixed a-priori constants, identical for every policy.
     OBS_SCALE = np.array([4.0, 1.0, 0.5, 1.5, 0.3, 0.05, 0.05, 0.05],
                          dtype=np.float32)
-    OBS_MEAN = np.array([11.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        dtype=np.float32)
 
     def __init__(self, mode="drift", track_type="circle", circle_radius=30.0):
         super().__init__()
