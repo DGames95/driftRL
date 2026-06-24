@@ -1,12 +1,16 @@
 """Evaluate a controller: live animation + diagnostic plots.
 
 Usage:
-    python evaluate.py --mode drift               # live animation + plots
-    python evaluate.py --mode grip --no-anim      # headless, plots only
-    python evaluate.py --mode drift --track random
+    python evaluate.py                              # live animation + plots, see defaults below
+    python evaluate.py --no-anim                    # headless, plots only
+    python evaluate.py --model-path models/drift_circle_warmstart/best_model.zip
     python evaluate.py --controller pid --mode grip --no-anim
-    python evaluate.py --instability              # open-loop sensitivity figure
-Figures go to report/figures/, prefixed pid_<track> or <mode>_<track> (rl).
+    python evaluate.py --instability                # open-loop sensitivity figure
+Figures go to report/figures/, prefixed pid_<track> / indi_<track> (non-rl)
+or the --model-path parent directory name (rl).
+
+All CLI args default to the DEFAULT_* constants below -- edit those instead
+of retyping flags every run; pass the flag to override for one run.
 """
 
 import argparse
@@ -22,6 +26,15 @@ from controllers import make_controller
 
 FIG_DIR = "report/figures"
 CAR_L, CAR_W = 4.0, 1.8  # drawn car footprint [m]
+
+# --- CLI defaults, edit these directly rather than retyping flags ---
+DEFAULT_MODE = "grip"          # reward shaping for diagnostics math/printing only --
+                                # does NOT select which model is loaded (see DEFAULT_MODEL_PATH)
+DEFAULT_TRACK = "random"
+DEFAULT_CONTROLLER = "rl"
+DEFAULT_MODEL_PATH = "models/drift_random/best_model.zip"  # used when --controller rl
+DEFAULT_SEED = 0
+DEFAULT_NO_ANIM = False
 
 
 class ControllerPolicy:
@@ -141,20 +154,24 @@ def diagnostics(log, env, prefix):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--mode", choices=["drift", "grip"], default="drift")
-    p.add_argument("--track", choices=["circle", "random"], default="circle")
-    p.add_argument("--controller", default="rl")
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--no-anim", action="store_true")
+    p.add_argument("--mode", choices=["drift", "grip"], default=DEFAULT_MODE,
+                   help="reward shaping for diagnostics math/printing only -- "
+                        "does NOT select which model is loaded, see --model-path")
+    p.add_argument("--track", choices=["circle", "random"], default=DEFAULT_TRACK)
+    p.add_argument("--controller", default=DEFAULT_CONTROLLER)
+    p.add_argument("--model-path", default=DEFAULT_MODEL_PATH,
+                   help="path to a PPO .zip, used when --controller rl")
+    p.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    p.add_argument("--no-anim", action="store_true", default=DEFAULT_NO_ANIM)
     args = p.parse_args()
 
     if args.no_anim:
         matplotlib.use("Agg")
 
     env = DriftEnv(mode=args.mode, track_type=args.track)
-    controller = make_controller(args.controller, env)
+    controller = make_controller(args.controller, env, model_path=args.model_path)
     model = ControllerPolicy(controller, env.DT)
-    prefix = (f"{args.mode}_{args.track}" if args.controller == "rl"
+    prefix = (os.path.basename(os.path.dirname(args.model_path)) if args.controller == "rl"
               else f"{args.controller}_{args.track}")
     log = run_episode(model, env, seed=args.seed)
     diagnostics(log, env, prefix=prefix)

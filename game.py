@@ -13,8 +13,10 @@ Usage:
     python game.py --track free             # open sandbox, no off-track/finish
     python game.py --mode grip              # HUD shows grip reward shaping
     python game.py --controller pid         # driver: keyboard, rl, pid, ...
-    python game.py --controller rl --mode grip --track random  # RL drives
+    python game.py --controller rl --model-path models/drift_circle/best_model.zip
 
+All CLI args default to the DEFAULT_* constants below -- edit those instead
+of retyping flags every run; pass the flag to override for one run.
 """
 
 import argparse
@@ -32,6 +34,13 @@ CAM_TAU = 0.3                  # camera heading smoothing [s]
 CAM_Y = 0.62                   # car drawn below screen center (look-ahead)
 GRID_STEP = 10.0               # world-space grid spacing [m]
 GRID_RADIUS = 90.0             # grid extent around the camera [m], > screen diag
+
+# --- CLI defaults, edit these directly rather than retyping flags ---
+DEFAULT_TRACK = "circle"
+DEFAULT_MODE = "drift"         # reward shaping shown in the HUD only
+DEFAULT_SEED = None
+DEFAULT_CONTROLLER = "keyboard"
+DEFAULT_MODEL_PATH = "models/drift_circle/best_model.zip"  # used when --controller rl
 
 
 def wrap(a):
@@ -120,11 +129,14 @@ def car_polygon(x, y, psi):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--track", choices=["circle", "random", "free"], default="circle")
-    p.add_argument("--mode", choices=["drift", "grip"], default="drift",
-                   help="reward shaping shown in the HUD")
-    p.add_argument("--seed", type=int, default=None)
-    p.add_argument("--controller", default="keyboard", help="who drives")
+    p.add_argument("--track", choices=["circle", "random", "free"], default=DEFAULT_TRACK)
+    p.add_argument("--mode", choices=["drift", "grip"], default=DEFAULT_MODE,
+                   help="reward shaping shown in the HUD only -- does NOT select "
+                        "which model is loaded, see --model-path")
+    p.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    p.add_argument("--controller", default=DEFAULT_CONTROLLER, help="who drives")
+    p.add_argument("--model-path", default=DEFAULT_MODEL_PATH,
+                   help="path to a PPO .zip, used when --controller rl")
     args = p.parse_args()
 
     pygame.init()
@@ -136,7 +148,7 @@ def main():
     big = pygame.font.SysFont("monospace", 36, bold=True)
 
     env = DriftEnv(mode=args.mode, track_type=args.track)
-    controller = make_controller(args.controller, env)
+    controller = make_controller(args.controller, env, model_path=args.model_path)
     obs, _ = env.reset(seed=args.seed)
     controller.reset()
     delta, T, score = 0.0, 0.0, 0.0
