@@ -15,9 +15,9 @@ physics yourself.
 | `track.py` | Track geometry: circle or random bounded-curvature tracks, track-frame errors |
 | `drift_env.py` | `DriftEnv` (`gymnasium.Env`): physics, reward modes `grip`/`drift`, + `analytic_grip_limit()` |
 | `train.py` | PPO training; saves `models/<mode>_<track>/best_model.zip` |
-| `controllers/` | Swappable drivers sharing one interface: `keyboard`, `rl` (trained PPO), `pid` (classical path follower) |
+| `controllers/` | Swappable drivers sharing one interface: `keyboard`, `rl` (trained PPO), `pid` (classical path follower). Auto-discovered — add/remove a controller by adding/deleting its file, nothing else to edit |
 | `evaluate.py` | Rollout of a controller: live animation, diagnostic figures, instability demo |
-| `game.py` | Playable pygame game (`--controller keyboard/rl/pid`, or `--demo` for rl) |
+| `game.py` | Playable pygame game (`--controller keyboard/rl/pid`) |
 | `report/report.tex` | LaTeX report (model → grip baseline → drift agent → game) |
 
 ## Setup
@@ -36,7 +36,7 @@ python game.py                          # circular track, keyboard
 python game.py --track random           # random track (new layout each restart)
 python game.py --track random --seed 7  # reproducible layout
 python game.py --controller pid         # watch the PID baseline
-python game.py --demo                   # watch the trained drift agent
+python game.py --controller rl          # watch the trained agent
 ```
 
 Arrow keys drive (left/right steer, up/down throttle/brake) through a
