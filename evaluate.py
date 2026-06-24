@@ -138,62 +138,17 @@ def diagnostics(log, env, prefix):
               f"{analytic_grip_limit(env.circle_radius):.2f} m/s")
 
 
-def instability_demo():
-    """Open-loop sensitivity figure: constant inputs vs added 0.5 s throttle stab."""
-    os.makedirs(FIG_DIR, exist_ok=True)
-    env = DriftEnv()
-    runs = {}
-    stab_lo, stab_hi = 300, 325  # 0.5 s full-throttle window at t = 6 s
-    for stab in (False, True):
-        env.reset(seed=0)
-        traj, betas = [], []
-        for k in range(600):
-            # delta = 0.09, T = 0.10 holds a quasi-steady circle for > 20 s
-            T = 1.0 if (stab and stab_lo <= k < stab_hi) else 0.10
-            _, _, term, trunc, info = env.step(np.array([0.09, T]))
-            traj.append([info["x"], info["y"]]); betas.append(info["beta"])
-            if term:
-                break
-        runs[stab] = (np.array(traj), np.degrees(np.array(betas)))
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 4))
-    draw_track(ax1, env.track)
-    for stab, (traj, _), in runs.items():
-        lbl = "0.5 s full-throttle stab" if stab else "constant inputs"
-        ax1.plot(traj[:, 0], traj[:, 1], lw=1.2, label=lbl)
-    ax1.set_xlabel("x [m]"); ax1.set_ylabel("y [m]"); ax1.legend(fontsize=8)
-    for stab, (_, betas) in runs.items():
-        t = np.arange(len(betas)) * env.DT
-        ax2.plot(t, betas, lw=1.2,
-                 label="stab" if stab else "constant")
-    ax2.axvspan(stab_lo * env.DT, stab_hi * env.DT, color="r", alpha=0.15, label="stab window")
-    ax2.set_xlabel("t [s]"); ax2.set_ylabel(r"$\beta$ [deg]")
-    ax2.legend(fontsize=8); ax2.grid(alpha=0.3)
-    fig.suptitle(r"Open loop: fixed $\delta = 0.09$, $T = 0.10$, with/without throttle stab")
-    fig.tight_layout(); fig.savefig(f"{FIG_DIR}/instability.pdf"); plt.close(fig)
-    for stab, (traj, betas) in runs.items():
-        print(f"stab={stab}: survived {len(betas) * env.DT:.1f} s, "
-              f"final |beta| = {abs(betas[-1]):.1f} deg")
-    print(f"Saved {FIG_DIR}/instability.pdf")
-
-
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--mode", choices=["drift", "grip"], default="drift")
     p.add_argument("--track", choices=["circle", "random"], default="circle")
     p.add_argument("--controller", choices=["rl", "pid"], default="rl")
-    p.add_argument("--model", default=None)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--no-anim", action="store_true")
-    p.add_argument("--instability", action="store_true")
     args = p.parse_args()
 
-    if args.no_anim or args.instability:
+    if args.no_anim:
         matplotlib.use("Agg")
-
-    if args.instability:
-        instability_demo()
-        raise SystemExit
 
     env = DriftEnv(mode=args.mode, track_type=args.track)
     if args.controller == "pid":
@@ -202,8 +157,7 @@ if __name__ == "__main__":
         prefix = f"pid_{args.track}"
     else:
         from stable_baselines3 import PPO
-        model_path = args.model or f"models/{args.mode}_{args.track}/best_model"
-        model = PPO.load(model_path, device="cpu")
+        model = PPO.load(f"models/{args.mode}_{args.track}/best_model", device="cpu")
         prefix = f"{args.mode}_{args.track}"
     log = run_episode(model, env, seed=args.seed)
     diagnostics(log, env, prefix=prefix)

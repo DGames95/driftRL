@@ -12,14 +12,13 @@ Usage:
     python game.py --track random --seed 7  # reproducible first layout
     python game.py --track free             # open sandbox, no off-track/finish
     python game.py --mode grip              # HUD shows grip reward shaping
-    python game.py --controller pid         # driver: keyboard, rl, pid
-    python game.py --demo                   # alias for --controller rl
-    python game.py --demo --screenshot report/figures/game.png
+    python game.py --controller pid         # driver: keyboard, rl, pid, pidref
+    python game.py --track free --controller pidref   # dial-a-drift PID
+    python game.py --controller rl --mode grip --track random  # RL drives
 
 """
 
 import argparse
-import os
 
 import numpy as np
 import pygame
@@ -126,11 +125,10 @@ def main():
     p.add_argument("--mode", choices=["drift", "grip"], default="drift",
                    help="reward shaping shown in the HUD")
     p.add_argument("--seed", type=int, default=None)
-    p.add_argument("--controller", choices=["keyboard", "rl", "pid"],
+    p.add_argument("--controller", choices=["keyboard", "rl", "pid", "pidref"],
                    default="keyboard", help="who drives")
-    p.add_argument("--model", default="models/grip_random/best_model")
-    p.add_argument("--screenshot", default=None, help="save a frame and exit")
     args = p.parse_args()
+    args.model = f"models/{args.mode}_{args.track}/best_model"
 
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
@@ -150,7 +148,6 @@ def main():
     ep_log = {"vx": [], "beta": [], "e_y": []}   # for the console benchmark summary
     cam_ang = env.state[2]
     over_msg = None
-    frame = 0
 
     running = True
     while running:
@@ -256,12 +253,6 @@ def main():
             screen.blit(t, t.get_rect(center=(SCREEN_W / 2, SCREEN_H / 2)))
 
         pygame.display.flip()
-        frame += 1
-        if args.screenshot and (frame >= 300 or over_msg):
-            os.makedirs(os.path.dirname(args.screenshot) or ".", exist_ok=True)
-            pygame.image.save(screen, args.screenshot)
-            print("saved", args.screenshot)
-            running = False
         clock.tick(50)  # real-time: matches dt = 0.02 s
 
     pygame.quit()
