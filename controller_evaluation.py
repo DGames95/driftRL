@@ -11,7 +11,6 @@ each tick, bypassing env._get_obs()'s track lookup.
 
 Usage:
     python controller_evaluation.py --controller pid
-    python controller_evaluation.py --controller pidref --no-show
     python controller_evaluation.py --controller rl --model models/grip_circle/best_model
 """
 
@@ -23,22 +22,10 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 from drift_env import DriftEnv
+from controllers import make_controller
 
 FIG_DIR = "report/figures"
 SETTLE_TOL = 0.1  # [m] band for settle-time reporting
-
-
-def build_controller(name, env, speed, model_path):
-    if name == "pid":
-        from controllers.pid import PIDController
-        return PIDController(env, v_max=speed)
-    if name == "pidref":
-        from controllers.reference_pid import PIDREF
-        return PIDREF(env, init_v=speed, v_min=speed, v_max=speed)
-    if name == "rl":
-        from controllers.rl import RLController
-        return RLController(model_path)
-    raise ValueError(f"unknown controller: {name}")
 
 
 def run_step_test(controller, env, speed, amplitude, step1_time, step2_time, duration):
@@ -98,9 +85,6 @@ def diagnostics(log, controller_name, step1_time, step2_time):
         ts = settle_time(t, e_y, win_start, win_end)
         print(f"[{controller_name}] {label}: peak |e_y| = {peak:.2f} m, "
               f"settle time (+-{SETTLE_TOL} m) = {ts:.2f} s")
-    if controller_name == "pidref":
-        print("[pidref] note: PIDREF has no e_y/e_psi feedback, so its "
-              "steering is expected to show ~no reaction to the step.")
 
 
 def plot_step_response(log, controller_name, step1_time, step2_time):
@@ -128,10 +112,7 @@ def plot_step_response(log, controller_name, step1_time, step2_time):
         a.axvline(step1_time, color="r", lw=0.8, alpha=0.5)
         a.axvline(step2_time, color="r", lw=0.8, alpha=0.5)
 
-    title = f"Lateral step response: {controller_name}"
-    if controller_name == "pidref":
-        title += " (no e_y feedback)"
-    axs[0].set_title(title)
+    axs[0].set_title(f"Lateral step response: {controller_name}")
     fig.tight_layout()
     path = f"{FIG_DIR}/{controller_name}_step_response.pdf"
     fig.savefig(path)
@@ -141,7 +122,7 @@ def plot_step_response(log, controller_name, step1_time, step2_time):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--controller", choices=["pid", "pidref", "rl"], default="pid")
+    p.add_argument("--controller", default="pid")
     p.add_argument("--model", default="models/grip_random/best_model")
     p.add_argument("--speed", type=float, default=15.0)
     p.add_argument("--amplitude", type=float, default=2.0)
@@ -155,7 +136,7 @@ if __name__ == "__main__":
         matplotlib.use("Agg")
 
     env = DriftEnv(mode="grip", track_type="free")
-    controller = build_controller(args.controller, env, args.speed, args.model)
+    controller = make_controller(args.controller, env, model_path=args.model, v_max=args.speed)
 
     log = run_step_test(controller, env, args.speed, args.amplitude,
                          args.step1_time, args.step2_time, args.duration)

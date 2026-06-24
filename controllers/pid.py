@@ -17,7 +17,7 @@ class PIDController(Controller):
 
     def __init__(self, env,
                  kp_ey=0.10, kp_epsi=0.8, kd_epsi=0.05,
-                 kv=0.15, safety=0.8, v_max=22.0):
+                 kv=0.15, safety=0.8, v_max=22.0, **kwargs):
         self.scale = env.OBS_SCALE
         self.L = env.LF + env.LR
         self.kp_ey, self.kp_epsi, self.kd_epsi = kp_ey, kp_epsi, kd_epsi

@@ -12,8 +12,7 @@ Usage:
     python game.py --track random --seed 7  # reproducible first layout
     python game.py --track free             # open sandbox, no off-track/finish
     python game.py --mode grip              # HUD shows grip reward shaping
-    python game.py --controller pid         # driver: keyboard, rl, pid, pidref
-    python game.py --track free --controller pidref   # dial-a-drift PID
+    python game.py --controller pid         # driver: keyboard, rl, pid, ...
     python game.py --controller rl --mode grip --track random  # RL drives
 
 """
@@ -125,10 +124,8 @@ def main():
     p.add_argument("--mode", choices=["drift", "grip"], default="drift",
                    help="reward shaping shown in the HUD")
     p.add_argument("--seed", type=int, default=None)
-    p.add_argument("--controller", choices=["keyboard", "rl", "pid", "pidref"],
-                   default="keyboard", help="who drives")
+    p.add_argument("--controller", default="keyboard", help="who drives")
     args = p.parse_args()
-    args.model = f"models/{args.mode}_{args.track}/best_model"
 
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
@@ -139,7 +136,7 @@ def main():
     big = pygame.font.SysFont("monospace", 36, bold=True)
 
     env = DriftEnv(mode=args.mode, track_type=args.track)
-    controller = make_controller(args.controller, env, args)
+    controller = make_controller(args.controller, env)
     obs, _ = env.reset(seed=args.seed)
     controller.reset()
     delta, T, score = 0.0, 0.0, 0.0

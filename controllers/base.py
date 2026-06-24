@@ -5,6 +5,9 @@ action the env expects, plus an abstracted keyboard intent so a controller
 can keep a human in the loop.
 
 Contract
+    __init__(env, **kwargs) : env is the DriftEnv instance; kwargs are
+      controller-specific overrides (e.g. model_path for RL) and may be
+      ignored.
     act(obs, intent, dt) -> np.ndarray([delta, T])
       obs    : normalized 8-vector from DriftEnv._get_obs()
                [vx, vy, r, e_y, e_psi, k0, k10, k25] / OBS_SCALE.

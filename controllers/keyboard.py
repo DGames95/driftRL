@@ -11,7 +11,7 @@ TAU_STEER, TAU_THR = 0.12, 0.25   # first-order input lag time constants [s]
 class KeyboardController(Controller):
     name = "keyboard"
 
-    def __init__(self):
+    def __init__(self, env, **kwargs):
         self.delta = 0.0
         self.T = 0.0
 

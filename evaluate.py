@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 
 from drift_env import DriftEnv, analytic_grip_limit
+from controllers import make_controller
 
 FIG_DIR = "report/figures"
 CAR_L, CAR_W = 4.0, 1.8  # drawn car footprint [m]
@@ -142,7 +143,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--mode", choices=["drift", "grip"], default="drift")
     p.add_argument("--track", choices=["circle", "random"], default="circle")
-    p.add_argument("--controller", choices=["rl", "pid"], default="rl")
+    p.add_argument("--controller", default="rl")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--no-anim", action="store_true")
     args = p.parse_args()
@@ -151,14 +152,10 @@ if __name__ == "__main__":
         matplotlib.use("Agg")
 
     env = DriftEnv(mode=args.mode, track_type=args.track)
-    if args.controller == "pid":
-        from controllers.pid import PIDController
-        model = ControllerPolicy(PIDController(env), env.DT)
-        prefix = f"pid_{args.track}"
-    else:
-        from stable_baselines3 import PPO
-        model = PPO.load(f"models/{args.mode}_{args.track}/best_model", device="cpu")
-        prefix = f"{args.mode}_{args.track}"
+    controller = make_controller(args.controller, env)
+    model = ControllerPolicy(controller, env.DT)
+    prefix = (f"{args.mode}_{args.track}" if args.controller == "rl"
+              else f"{args.controller}_{args.track}")
     log = run_episode(model, env, seed=args.seed)
     diagnostics(log, env, prefix=prefix)
     if not args.no_anim:
