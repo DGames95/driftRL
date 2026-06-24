@@ -202,7 +202,7 @@ if __name__ == "__main__":
         prefix = f"pid_{args.track}"
     else:
         from stable_baselines3 import PPO
-        model_path = args.model or f"models/{args.mode}_circle/best_model"
+        model_path = args.model or f"models/{args.mode}_{args.track}/best_model"
         model = PPO.load(model_path, device="cpu")
         prefix = f"{args.mode}_{args.track}"
     log = run_episode(model, env, seed=args.seed)
