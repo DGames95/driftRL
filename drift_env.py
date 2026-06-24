@@ -58,7 +58,7 @@ class DriftEnv(gym.Env):
 
     def __init__(self, mode="drift", track_type="circle", circle_radius=30.0):
         super().__init__()
-        assert mode in ("drift", "grip") and track_type in ("circle", "random")
+        assert mode in ("drift", "grip") and track_type in ("circle", "random", "free")
         self.mode = mode
         self.track_type = track_type
         self.circle_radius = circle_radius
@@ -102,6 +102,9 @@ class DriftEnv(gym.Env):
         if self.track_type == "circle":
             if self.track is None:
                 self.track = Track.circle(self.circle_radius)
+        elif self.track_type == "free":
+            if self.track is None:
+                self.track = Track.free()
         else:
             self.track = Track.random_track(self.np_random)  # new layout each episode
         v0 = 8.0 + self.np_random.uniform(-1.0, 1.0)
@@ -169,18 +172,23 @@ class DriftEnv(gym.Env):
                 ds -= L
         self.prev_s = s_now
 
+        # "free" is an open sandbox with no track to be on/off or finish;
+        # only the stall condition can end an episode there.
+        is_free = self.track_type == "free"
+
         # reward as labeled components so callers (e.g. game.py HUD) can show
         # what the shaping is actually paying for; reward == sum(terms).
         terms = {
-            "progress": self.W_PROG * ds,
-            "e_y": -self.W_EY * e_y ** 2,
             "d_delta": -self.W_DDOT * delta_dot ** 2,
             "beta": (self.W_BETA_DRIFT * abs(beta) if self.mode == "drift"
                      else -self.W_BETA_GRIP * beta ** 2),
         }
+        if not is_free:
+            terms["progress"] = self.W_PROG * ds
+            terms["e_y"] = -self.W_EY * e_y ** 2
 
-        terminated = bool(abs(e_y) > self.track.half_width or vx < 1.0)
-        finished = self.track.at_end(self.track_idx)
+        terminated = bool(vx < 1.0 or (not is_free and abs(e_y) > self.track.half_width))
+        finished = (not is_free) and self.track.at_end(self.track_idx)
         if terminated:
             terms["term"] = -self.TERM_PENALTY
         else:

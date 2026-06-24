@@ -49,6 +49,17 @@ class Track:
         return cls(xy, psi, kappa, closed=True)
 
     @classmethod
+    def free(cls, length=4000.0):
+        """Open sandbox: a long straight centerline, used only to seed the
+        car's start pose. DriftEnv skips off-track/progress scoring for this
+        track type, so the car can roam anywhere on the plane."""
+        n = int(length / DS)
+        xy = np.stack([np.arange(n) * DS, np.zeros(n)], axis=1)
+        psi = np.zeros(n)
+        kappa = np.zeros(n)
+        return cls(xy, psi, kappa, closed=False)
+
+    @classmethod
     def random_track(cls, rng, length=500.0):
         # curvature knots: random spacing, random sign, |kappa| in [LO, HI];
         # linear interpolation between knots gives a smooth bounded profile

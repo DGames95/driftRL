@@ -10,13 +10,12 @@ Usage:
     python game.py                          # circular track, keyboard
     python game.py --track random           # random track, new layout per run
     python game.py --track random --seed 7  # reproducible first layout
+    python game.py --track free             # open sandbox, no off-track/finish
     python game.py --mode grip              # HUD shows grip reward shaping
     python game.py --controller pid         # driver: keyboard, rl, pid
     python game.py --demo                   # alias for --controller rl
     python game.py --demo --screenshot report/figures/game.png
 
-A console summary (return, slip angle, e_y, vx) prints on crash/finish/
-restart/quit, whoever is driving.
 """
 
 import argparse
@@ -33,6 +32,8 @@ SCALE = 8.0                    # px per meter
 CAR_L, CAR_W = 4.0, 1.8        # drawn footprint [m]
 CAM_TAU = 0.3                  # camera heading smoothing [s]
 CAM_Y = 0.62                   # car drawn below screen center (look-ahead)
+GRID_STEP = 10.0               # world-space grid spacing [m]
+GRID_RADIUS = 90.0             # grid extent around the camera [m], > screen diag
 
 
 def wrap(a):
@@ -47,6 +48,55 @@ def to_screen(pts, cam_pos, cam_ang):
     qx = c * d[..., 0] - s * d[..., 1]
     qy = s * d[..., 0] + c * d[..., 1]
     return np.stack([SCREEN_W / 2 + qx * SCALE, SCREEN_H * CAM_Y - qy * SCALE], axis=-1)
+
+
+def draw_grid(screen, cam_pos, cam_ang):
+    """World-fixed grid lines, for position/scale reference on the otherwise
+    featureless background; spacing is in world meters, not screen pixels."""
+    cx, cy = cam_pos
+    xs = np.arange(np.floor((cx - GRID_RADIUS) / GRID_STEP),
+                   np.ceil((cx + GRID_RADIUS) / GRID_STEP) + 1) * GRID_STEP
+    ys = np.arange(np.floor((cy - GRID_RADIUS) / GRID_STEP),
+                   np.ceil((cy + GRID_RADIUS) / GRID_STEP) + 1) * GRID_STEP
+    for x in xs:
+        col = (65, 65, 90) if abs(x) < 1e-6 else (48, 48, 55)
+        p0 = to_screen(np.array([x, cy - GRID_RADIUS]), cam_pos, cam_ang)
+        p1 = to_screen(np.array([x, cy + GRID_RADIUS]), cam_pos, cam_ang)
+        pygame.draw.line(screen, col, p0.tolist(), p1.tolist(), 1)
+    for y in ys:
+        col = (65, 65, 90) if abs(y) < 1e-6 else (48, 48, 55)
+        p0 = to_screen(np.array([cx - GRID_RADIUS, y]), cam_pos, cam_ang)
+        p1 = to_screen(np.array([cx + GRID_RADIUS, y]), cam_pos, cam_ang)
+        pygame.draw.line(screen, col, p0.tolist(), p1.tolist(), 1)
+
+
+def draw_input_panel(screen, font, delta, T, intent):
+    """Bottom-right bars: actual car input (delta/0.5, T) vs raw keyboard
+    intent (steer, throttle). They coincide for the keyboard controller;
+    for rl/pid the intent is read but has no effect on the car, so the
+    two bars diverge."""
+    w, h = 160, 72
+    x0, y0 = SCREEN_W - w - 10, SCREEN_H - h - 10
+    pygame.draw.rect(screen, (45, 45, 50), (x0, y0, w, h))
+    bar_x, bar_w, bar_h = x0 + 46, 104, 12
+    cx = bar_x + bar_w / 2
+    rows = [("steer", -delta / 0.5, -intent["steer"]),
+            ("thr", T, intent["throttle"])]
+    for i, (label, car_val, user_val) in enumerate(rows):
+        by = y0 + 8 + i * 26
+        screen.blit(font.render(label, True, (200, 200, 200)), (x0 + 6, by))
+        pygame.draw.rect(screen, (25, 25, 28), (bar_x, by, bar_w, bar_h))
+        pygame.draw.line(screen, (90, 90, 95), (cx, by), (cx, by + bar_h), 1)
+        cv = float(np.clip(car_val, -1.0, 1.0))
+        fill_x = cx + cv * bar_w / 2
+        pygame.draw.rect(screen, (70, 130, 240),
+                         (min(cx, fill_x), by, max(abs(fill_x - cx), 1), bar_h))
+        uv = float(np.clip(user_val, -1.0, 1.0))
+        mx = cx + uv * bar_w / 2
+        pygame.draw.line(screen, (230, 200, 60), (mx, by - 2), (mx, by + bar_h + 2), 2)
+    legend_y = y0 + h - 16
+    screen.blit(font.render("car", True, (70, 130, 240)), (x0 + 6, legend_y))
+    screen.blit(font.render("input", True, (230, 200, 60)), (x0 + 50, legend_y))
 
 
 def print_summary(ep_log, env, score, driver, mode, status):
@@ -72,7 +122,7 @@ def car_polygon(x, y, psi):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--track", choices=["circle", "random"], default="circle")
+    p.add_argument("--track", choices=["circle", "random", "free"], default="circle")
     p.add_argument("--mode", choices=["drift", "grip"], default="drift",
                    help="reward shaping shown in the HUD")
     p.add_argument("--seed", type=int, default=None)
@@ -87,6 +137,7 @@ def main():
     pygame.display.set_caption("DriftEnv")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("monospace", 16)
+    small_font = pygame.font.SysFont("monospace", 13)
     big = pygame.font.SysFont("monospace", 36, bold=True)
 
     env = DriftEnv(mode=args.mode, track_type=args.track)
@@ -94,6 +145,7 @@ def main():
     obs, _ = env.reset(seed=args.seed)
     controller.reset()
     delta, T, score = 0.0, 0.0, 0.0
+    intent = {"steer": 0.0, "throttle": 0.0}   # raw keyboard intent, for the input panel
     terms, cum = {}, {}          # last-step reward components and their totals
     ep_log = {"vx": [], "beta": [], "e_y": []}   # for the console benchmark summary
     cam_ang = env.state[2]
@@ -135,7 +187,8 @@ def main():
             ep_log["vx"].append(info["vx"]); ep_log["beta"].append(info["beta"])
             ep_log["e_y"].append(info["e_y"])
             if term:
-                over_msg = "OFF TRACK  -  press R"
+                over_msg = (None if args.track == "free"
+                            else "OFF TRACK  -  press R")
                 print_summary(ep_log, env, score, controller.name, args.mode, "off-track")
             elif info["finished"]:
                 over_msg = "TRACK FINISHED  -  press R"
@@ -153,12 +206,14 @@ def main():
 
         # ---------------- draw
         screen.fill((30, 30, 35))
+        draw_grid(screen, cam_pos, cam_ang)
         tr = env.track
-        for line, col, w in ((tr.left, (220, 220, 220), 3),
-                             (tr.right, (220, 220, 220), 3),
-                             (tr.xy, (90, 90, 100), 1)):
-            pts = to_screen(line, cam_pos, cam_ang)
-            pygame.draw.lines(screen, col, tr.closed, pts.tolist(), w)
+        if args.track != "free":     # free roam has no meaningful track boundary
+            for line, col, w in ((tr.left, (220, 220, 220), 3),
+                                 (tr.right, (220, 220, 220), 3),
+                                 (tr.xy, (90, 90, 100), 1)):
+                pts = to_screen(line, cam_pos, cam_ang)
+                pygame.draw.lines(screen, col, tr.closed, pts.tolist(), w)
 
         pygame.draw.polygon(screen, (70, 130, 240),
                             to_screen(car_polygon(x, y, psi), cam_pos, cam_ang).tolist())
@@ -195,6 +250,7 @@ def main():
 
         screen.blit(font.render("arrows: drive   R: restart   ESC: quit",
                                 True, (140, 140, 140)), (10, SCREEN_H - 26))
+        draw_input_panel(screen, small_font, delta, T, intent)
         if over_msg:
             t = big.render(over_msg, True, (255, 200, 60))
             screen.blit(t, t.get_rect(center=(SCREEN_W / 2, SCREEN_H / 2)))
