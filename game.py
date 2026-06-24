@@ -7,12 +7,16 @@ Controls:
     ESC            quit
 
 Usage:
-    python game.py                          # circular track
+    python game.py                          # circular track, keyboard
     python game.py --track random           # random track, new layout per run
     python game.py --track random --seed 7  # reproducible first layout
     python game.py --mode grip              # HUD shows grip reward shaping
-    python game.py --demo                   # trained drift agent plays instead
+    python game.py --controller pid         # driver: keyboard, rl, pid
+    python game.py --demo                   # alias for --controller rl
     python game.py --demo --screenshot report/figures/game.png
+
+A console summary (return, slip angle, e_y, vx) prints on crash/finish/
+restart/quit, whoever is driving.
 """
 
 import argparse
@@ -22,11 +26,11 @@ import numpy as np
 import pygame
 
 from drift_env import DriftEnv
+from controllers import make_controller
 
 SCREEN_W, SCREEN_H = 900, 700
 SCALE = 8.0                    # px per meter
 CAR_L, CAR_W = 4.0, 1.8        # drawn footprint [m]
-TAU_STEER, TAU_THR = 0.12, 0.25   # first-order input lag time constants [s]
 CAM_TAU = 0.3                  # camera heading smoothing [s]
 CAM_Y = 0.62                   # car drawn below screen center (look-ahead)
 
@@ -45,6 +49,20 @@ def to_screen(pts, cam_pos, cam_ang):
     return np.stack([SCREEN_W / 2 + qx * SCALE, SCREEN_H * CAM_Y - qy * SCALE], axis=-1)
 
 
+def print_summary(ep_log, env, score, driver, mode, status):
+    """Console benchmark line, same stats evaluate.py reports for RL/PID runs."""
+    n = len(ep_log["vx"])
+    if n == 0:
+        return
+    vx, beta, e_y = (np.array(ep_log[k]) for k in ("vx", "beta", "e_y"))
+    n4 = max(n // 4, 1)
+    print(f"[{driver}/{mode}] {status}: {n} steps ({n * env.DT:.1f} s), return = {score:.1f}")
+    print(f"  mean |beta| = {np.degrees(np.abs(beta).mean()):.1f} deg "
+          f"(settled {np.degrees(np.abs(beta[n4:]).mean()):.1f}, max {np.degrees(np.abs(beta).max()):.1f} deg), "
+          f"mean |e_y| = {np.abs(e_y).mean():.2f} m")
+    print(f"  vx settled mean = {vx[n4:].mean():.2f} m/s, max = {vx.max():.2f}")
+
+
 def car_polygon(x, y, psi):
     base = np.array([[CAR_L / 2, CAR_W / 2], [CAR_L / 2, -CAR_W / 2],
                      [-CAR_L / 2, -CAR_W / 2], [-CAR_L / 2, CAR_W / 2]])
@@ -58,15 +76,11 @@ def main():
     p.add_argument("--mode", choices=["drift", "grip"], default="drift",
                    help="reward shaping shown in the HUD")
     p.add_argument("--seed", type=int, default=None)
-    p.add_argument("--demo", action="store_true", help="trained agent drives")
+    p.add_argument("--controller", choices=["keyboard", "rl", "pid"],
+                   default="keyboard", help="who drives")
     p.add_argument("--model", default="models/grip_random/best_model")
     p.add_argument("--screenshot", default=None, help="save a frame and exit")
     args = p.parse_args()
-
-    model = None
-    if args.demo:
-        from stable_baselines3 import PPO
-        model = PPO.load(args.model, device="cpu")
 
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
@@ -76,9 +90,12 @@ def main():
     big = pygame.font.SysFont("monospace", 36, bold=True)
 
     env = DriftEnv(mode=args.mode, track_type=args.track)
+    controller = make_controller(args.controller, env, args)
     obs, _ = env.reset(seed=args.seed)
+    controller.reset()
     delta, T, score = 0.0, 0.0, 0.0
     terms, cum = {}, {}          # last-step reward components and their totals
+    ep_log = {"vx": [], "beta": [], "e_y": []}   # for the console benchmark summary
     cam_ang = env.state[2]
     over_msg = None
     frame = 0
@@ -87,36 +104,42 @@ def main():
     while running:
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
+                print_summary(ep_log, env, score, controller.name, args.mode, "quit")
                 running = False
             if ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_ESCAPE:
+                    print_summary(ep_log, env, score, controller.name, args.mode, "quit")
                     running = False
                 if ev.key == pygame.K_r:
+                    if over_msg is None:
+                        print_summary(ep_log, env, score, controller.name, args.mode, "interrupted")
                     obs, _ = env.reset()
+                    controller.reset()
                     delta, T, score, over_msg = 0.0, 0.0, 0.0, None
                     terms, cum = {}, {}
+                    ep_log = {"vx": [], "beta": [], "e_y": []}
                     cam_ang = env.state[2]
 
-        # ---------------- input -> action (first-order lag on key targets)
+        # ---------------- input -> action via the active controller
         if over_msg is None:
-            if model is not None:
-                action, _ = model.predict(obs, deterministic=True)
-                delta, T = float(action[0]), float(action[1])
-            else:
-                keys = pygame.key.get_pressed()
-                steer_t = 0.5 * (keys[pygame.K_LEFT] - keys[pygame.K_RIGHT])
-                thr_t = 1.0 * (keys[pygame.K_UP] - keys[pygame.K_DOWN])
-                delta += (steer_t - delta) * env.DT / TAU_STEER
-                T += (thr_t - T) * env.DT / TAU_THR
+            keys = pygame.key.get_pressed()
+            intent = {"steer": float(keys[pygame.K_LEFT] - keys[pygame.K_RIGHT]),
+                      "throttle": float(keys[pygame.K_UP] - keys[pygame.K_DOWN])}
+            action = controller.act(obs, intent, env.DT)
+            delta, T = float(action[0]), float(action[1])
             obs, reward, term, trunc, info = env.step(np.array([delta, T]))
             score += reward
             terms = info["reward_terms"]
             for k, v in terms.items():
                 cum[k] = cum.get(k, 0.0) + v
+            ep_log["vx"].append(info["vx"]); ep_log["beta"].append(info["beta"])
+            ep_log["e_y"].append(info["e_y"])
             if term:
                 over_msg = "OFF TRACK  -  press R"
+                print_summary(ep_log, env, score, controller.name, args.mode, "off-track")
             elif info["finished"]:
                 over_msg = "TRACK FINISHED  -  press R"
+                print_summary(ep_log, env, score, controller.name, args.mode, "finished")
 
         x, y, psi, vx, vy, r = env.state
         v = float(np.hypot(vx, vy))
@@ -149,7 +172,8 @@ def main():
         beta = np.degrees(np.arctan2(vy, max(vx, 0.5)))
         hud = [f"speed {v:5.1f} m/s   slip {beta:+6.1f} deg",
                f"steer {np.degrees(delta):+5.1f} deg   throttle {T:+4.2f}",
-               f"score {score:8.1f}   t {env.steps * env.DT:5.1f} s"]
+               f"score {score:8.1f}   t {env.steps * env.DT:5.1f} s",
+               f"driver: {controller.name}"]
         for i, line in enumerate(hud):
             screen.blit(font.render(line, True, (230, 230, 230)), (10, 10 + 20 * i))
 

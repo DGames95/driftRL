@@ -188,6 +188,39 @@ velocities and commands (right).}
 \label{fig:grip}
 \end{figure}
 
+\subsection{Classical baseline: PID path follower}
+\label{sec:pid}
+As a non-learned reference point, \texttt{controllers/pid.py} implements a
+classical grip-style path follower on the same observation/action interface
+as the RL agents. Steering combines a curvature feedforward
+($\delta_{ff} = L\kappa_0$, $L = l_f + l_r$) with proportional feedback on
+lateral offset and heading error and a derivative term on heading-error rate.
+Throttle is proportional control toward a target speed set from the
+curvature preview: the tightest upcoming corner radius $1/\max(|\kappa_0|,
+|\kappa_{10}|,|\kappa_{25}|)$ is fed through the same analytic grip limit of
+Eq.~\eqref{eq:ellipse}'s steady-state balance (Section~\ref{sec:grip}),
+scaled by a fixed safety factor of 0.8.
+
+Run on the grip-mode circular track (8 seeds), the controller is
+deterministic up to the randomized initial speed and heading offset:
+all eight episodes complete the full 20\,s without leaving the track,
+settling at $v_x = 12.58$\,m/s --- 77\% of the analytic limit
+$v_{\max} = 16.26$\,m/s, consistent with its 0.8 safety margin on a
+P-controlled, not perfectly tracked, target --- with mean lateral offset
+$|e_y| = 0.10$\,m and settled slip angle $0.3^\circ$ (max $1.9^\circ$ across
+seeds). Unlike the learned agents, the PID controller has no incentive
+term on slip at all; it stays this close to zero because zeroing $e_y$ and
+$e_\psi$ on a constant-curvature track requires almost no sideslip, not
+because slip is explicitly penalized.
+
+\begin{figure}[h]\centering
+\includegraphics[width=0.42\textwidth]{pid_circle_trajectory.pdf}
+\includegraphics[width=0.52\textwidth]{pid_circle_histories.pdf}
+\caption{PID baseline on the circular track, grip mode: trajectory (left),
+slip angle, velocities and commands (right).}
+\label{fig:pid}
+\end{figure}
+
 \section{Drift agent}
 With the slip reward, the learned behavior changes qualitatively. Across
 eight evaluation seeds, six episodes run the full 20\,s with returns

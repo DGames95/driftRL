@@ -1,11 +1,12 @@
-"""Evaluate a trained policy: live animation + diagnostic plots.
+"""Evaluate a controller: live animation + diagnostic plots.
 
 Usage:
     python evaluate.py --mode drift               # live animation + plots
     python evaluate.py --mode grip --no-anim      # headless, plots only
     python evaluate.py --mode drift --track random
+    python evaluate.py --controller pid --mode grip --no-anim
     python evaluate.py --instability              # open-loop sensitivity figure
-Figures go to report/figures/ prefixed by <mode>_<track>.
+Figures go to report/figures/, prefixed pid_<track> or <mode>_<track> (rl).
 """
 
 import argparse
@@ -22,8 +23,23 @@ FIG_DIR = "report/figures"
 CAR_L, CAR_W = 4.0, 1.8  # drawn car footprint [m]
 
 
+class ControllerPolicy:
+    """Adapts a controllers.Controller to the model.predict(obs) interface below."""
+
+    def __init__(self, controller, dt):
+        self.controller, self.dt = controller, dt
+
+    def reset(self):
+        self.controller.reset()
+
+    def predict(self, obs, deterministic=True):
+        return self.controller.act(obs, {"steer": 0.0, "throttle": 0.0}, self.dt), None
+
+
 def run_episode(model, env, seed=0, deterministic=True):
     obs, _ = env.reset(seed=seed)
+    if hasattr(model, "reset"):
+        model.reset()
     log = []
     done = False
     while not done:
@@ -165,6 +181,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--mode", choices=["drift", "grip"], default="drift")
     p.add_argument("--track", choices=["circle", "random"], default="circle")
+    p.add_argument("--controller", choices=["rl", "pid"], default="rl")
     p.add_argument("--model", default=None)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--no-anim", action="store_true")
@@ -178,11 +195,17 @@ if __name__ == "__main__":
         instability_demo()
         raise SystemExit
 
-    from stable_baselines3 import PPO
-    model_path = args.model or f"models/{args.mode}_circle/best_model"
     env = DriftEnv(mode=args.mode, track_type=args.track)
-    model = PPO.load(model_path, device="cpu")
+    if args.controller == "pid":
+        from controllers.pid import PIDController
+        model = ControllerPolicy(PIDController(env), env.DT)
+        prefix = f"pid_{args.track}"
+    else:
+        from stable_baselines3 import PPO
+        model_path = args.model or f"models/{args.mode}_circle/best_model"
+        model = PPO.load(model_path, device="cpu")
+        prefix = f"{args.mode}_{args.track}"
     log = run_episode(model, env, seed=args.seed)
-    diagnostics(log, env, prefix=f"{args.mode}_{args.track}")
+    diagnostics(log, env, prefix=prefix)
     if not args.no_anim:
         animate(log, env)
