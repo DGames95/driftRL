@@ -1,11 +1,15 @@
 """Train PPO on DriftEnv.
 
 Usage:
-    python train.py --mode drift            # drift agent (default)
+    python train.py                          # see defaults below
     python train.py --mode grip             # grip-limit baseline
     python train.py --mode drift --track random
     python train.py --no-plots              # skip the post-training figures (for unattended runs)
+    python train.py --init-from models/grip_circle/best_model.zip   # warm-start
 Models are saved to models/<mode>_<track>/best_model.zip.
+
+All CLI args default to the DEFAULT_* constants below -- edit those instead
+of retyping flags every run; pass the flag to override for one run.
 """
 
 import argparse
@@ -18,6 +22,13 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.utils import get_latest_run_id
 
 from drift_env import DriftEnv
+
+# --- CLI defaults, edit these directly rather than retyping flags ---
+DEFAULT_MODE = "drift"
+DEFAULT_TRACK = "circle"
+DEFAULT_STEPS = 500_000
+DEFAULT_NO_PLOTS = False
+DEFAULT_INIT_FROM = None  # e.g. "models/grip_circle/best_model.zip" to warm-start
 
 
 def plot_training(env, eval_cb, log_dir, tag, show=True):
@@ -80,13 +91,18 @@ def plot_training(env, eval_cb, log_dir, tag, show=True):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--mode", choices=["drift", "grip"], default="drift")
-    p.add_argument("--track", choices=["circle", "random"], default="circle")
-    p.add_argument("--steps", type=int, default=500_000)
-    p.add_argument("--no-plots", action="store_true", help="skip showing/saving training figures (for unattended runs)")
+    p.add_argument("--mode", choices=["drift", "grip"], default=DEFAULT_MODE)
+    p.add_argument("--track", choices=["circle", "random"], default=DEFAULT_TRACK)
+    p.add_argument("--steps", type=int, default=DEFAULT_STEPS)
+    p.add_argument("--no-plots", action="store_true", default=DEFAULT_NO_PLOTS,
+                   help="skip showing/saving training figures (for unattended runs)")
+    p.add_argument("--init-from", default=DEFAULT_INIT_FROM,
+                   help="path to a saved model .zip to warm-start the policy/value weights from")
     args = p.parse_args()
 
     tag = f"{args.mode}_{args.track}"
+    if args.init_from:
+        tag += "_warmstart"
     env = Monitor(DriftEnv(mode=args.mode, track_type=args.track))
     eval_env = Monitor(DriftEnv(mode=args.mode, track_type=args.track))
 
@@ -100,14 +116,23 @@ if __name__ == "__main__":
         verbose=1,
     )
 
-    model = PPO(
-        "MlpPolicy",
-        env,
-        learning_rate=3e-4,
-        gamma=0.999,  # ~20 s horizon; default 0.99 made early termination invisible
-        verbose=1,
-        device="cpu",  # MLP policies train faster on CPU than GPU in SB3
-    )
+    if args.init_from:
+        print(f"Warm-starting from {args.init_from}")
+        model = PPO.load(
+            args.init_from,
+            env=env,
+            device="cpu",  # MLP policies train faster on CPU than GPU in SB3
+            custom_objects={"learning_rate": 3e-4, "gamma": 0.999},
+        )
+    else:
+        model = PPO(
+            "MlpPolicy",
+            env,
+            learning_rate=3e-4,
+            gamma=0.999,  # ~20 s horizon; default 0.99 made early termination invisible
+            verbose=1,
+            device="cpu",  # MLP policies train faster on CPU than GPU in SB3
+        )
     # add a csv format alongside the usual stdout/tensorboard logging so PPO's
     # per-rollout diagnostics (explained_variance, approx_kl, ...) can be
     # re-read and plotted after training, not just streamed to tensorboard.
