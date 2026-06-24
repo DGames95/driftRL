@@ -10,6 +10,7 @@ class RLController(Controller):
         from stable_baselines3 import PPO
         if model_path is None:
             model_path = f"models/{env.mode}_{env.track_type}/best_model"
+            print("loaded model :" + str(model_path))
         self.model = PPO.load(model_path, device="cpu")
 
     def act(self, obs, intent, dt):
