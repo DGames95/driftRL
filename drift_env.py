@@ -36,15 +36,15 @@ class DriftEnv(gym.Env):
     C_DRAG = 1.0           # quadratic drag coeff [N s^2/m^2]
 
     DT = 0.02
-    MAX_STEPS = 1000       # 20 s episode
+    MAX_STEPS = 2000       # 20 s episode
 
     # reward weights
     W_BETA_DRIFT = 3.0     # drift mode: reward |beta|
     W_BETA_GRIP = 10.0     # grip mode: penalize beta^2
     W_PROG = 10.0            # reward per metre of centerline arc-length advanced
-    W_EY = 30.0
-    W_DDOT = 0.00001
-    W_SURVIVE = 2.0          # per-step living reward (dense "stay on track" signal)
+    W_EY = 0.5
+    W_DDOT = 0.001
+    W_SURVIVE = 5.0          # per-step living reward (dense "stay on track" signal)
     TERM_PENALTY = 2000.0   # one-off penalty on leaving the track / stalling
     W_FINISH = 500.0        # one-off bonus for reaching the end of the track
 
