@@ -11,6 +11,13 @@ Tire model:  F_y = -Fy_max * tanh(C_alpha * alpha / Fy_max), with a
 Reward modes:
   "drift"  rewards slip angle  -> agent should drift
   "grip"   penalizes slip angle -> agent should lap at the traction limit
+
+Reward also pays progress (per metre of centerline arc-length advanced) and a
+per-step survival bonus, with a one-off penalty for leaving the track / stalling
+and a bonus for finishing; drift mode adds a bonus for sustaining a drift (slip
+held above a threshold without reversing sign) and for forward speed up to a
+soft target, so the agent learns to hold a fast slide rather than swerve back
+and forth or creep slowly. The "free" sandbox keeps only the mode terms.
 """
 
 import numpy as np
@@ -36,17 +43,22 @@ class DriftEnv(gym.Env):
     C_DRAG = 1.0           # quadratic drag coeff [N s^2/m^2]
 
     DT = 0.02
-    MAX_STEPS = 2000       # 20 s episode
+    MAX_STEPS = 8000       # limit steps
 
     # reward weights
-    W_BETA_DRIFT = 5.0     # drift mode: reward |beta|
+    W_BETA_DRIFT = 0.5     # drift mode: reward |beta| (kicks the tail out)
     W_BETA_GRIP = 10.0     # grip mode: penalize beta^2
-    W_PROG = 10.0            # reward per metre of centerline arc-length advanced
-    W_EY = 0.5
+    W_HOLD = 13.0           # drift mode: bonus for sustaining a drift
+    BETA_DRIFT_MIN = 0.3  # |beta| [rad] above which the car counts as drifting
+    HOLD_CAP = 3.0         # [s] held-drift duration at which the bonus saturates
+    W_SPEED = 0.05          # drift mode: reward forward speed (a fast drift beats a slow one)
+    V_SPEED_TARGET = 10.0  # [m/s] soft cap; no extra speed reward beyond this
+    W_PROG = 50.0            # reward per metre of centerline arc-length advanced
+    W_EY = 0.6
     W_DDOT = 0.002
-    W_SURVIVE = 5.0          # per-step living reward (dense "stay on track" signal)
+    W_SURVIVE = 8.0          # per-step living reward (dense "stay on track" signal)
     TERM_PENALTY = 2000.0   # one-off penalty on leaving the track / stalling
-    W_FINISH = 500.0        # one-off bonus for reaching the end of the track
+    W_FINISH = 1000.0        # one-off bonus for reaching the end of the track
 
     # observation normalization: scale to ~unit variance over the driving regime
     # (operating spread, NOT physical max range) and offset the one input that is
@@ -72,6 +84,8 @@ class DriftEnv(gym.Env):
         self.track = None
         self.state = None       # [x, y, psi, vx, vy, r] global pose + body velocities
         self.prev_delta = 0.0
+        self.prev_beta = 0.0
+        self.drift_streak = 0   # consecutive steps holding a same-sign drift
         self.track_idx = 0
         self.prev_s = 0.0
         self.steps = 0
@@ -105,11 +119,13 @@ class DriftEnv(gym.Env):
                 self.track = Track.free()
         else:
             self.track = Track.random_track(self.np_random)  # new layout each episode
-        v0 = 8.0 + self.np_random.uniform(-1.0, 1.0)
+        v0 = 11.0 + self.np_random.uniform(-2.0, 2.0)
         psi0 = self.track.psi[0] + self.np_random.uniform(-0.05, 0.05)
         x0, y0 = self.track.xy[0]
         self.state = np.array([x0, y0, psi0, v0, 0.0, 0.0])
         self.prev_delta = 0.0
+        self.prev_beta = 0.0
+        self.drift_streak = 0
         self.track_idx = 0
         self.steps = 0
         obs, _, _ = self._get_obs()
@@ -156,6 +172,15 @@ class DriftEnv(gym.Env):
 
         obs, e_y, e_psi = self._get_obs()
         beta = np.arctan2(vy, max(vx, 0.5))
+        # sustained-drift streak: count consecutive steps holding slip above the
+        # drift threshold without it reversing sign. A "catch" (slip drops below
+        # the threshold) or a sign flip resets the streak, so the back-and-forth
+        # drift-catch-drift cycle never builds up the bonus while a held drift does.
+        if abs(beta) > self.BETA_DRIFT_MIN and beta * self.prev_beta >= 0.0:
+            self.drift_streak += 1
+        else:
+            self.drift_streak = 0
+        self.prev_beta = beta
         delta_dot = (delta - self.prev_delta) / self.DT
         self.prev_delta = delta
 
@@ -181,6 +206,14 @@ class DriftEnv(gym.Env):
             "beta": (self.W_BETA_DRIFT * abs(beta) if self.mode == "drift"
                      else -self.W_BETA_GRIP * beta ** 2),
         }
+        if self.mode == "drift":
+            # bonus grows with how long the drift has been held, then saturates,
+            # so a long sustained slide pays far more than re-initiating one
+            terms["hold"] = self.W_HOLD * min(self.drift_streak * self.DT,
+                                              self.HOLD_CAP)
+            # reward forward speed up to a soft target, so the agent learns a
+            # *fast* drift rather than a slow one that is merely easy to hold
+            terms["speed"] = self.W_SPEED * min(vx, self.V_SPEED_TARGET)
         if not is_free:
             terms["progress"] = self.W_PROG * ds
             terms["e_y"] = -self.W_EY * e_y ** 2
