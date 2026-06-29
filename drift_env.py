@@ -1,7 +1,7 @@
 """DriftEnv: 3-DOF single-track (bicycle) model on a circular or random track.
 
-Observation: [v_x, v_y, r, e_y, e_psi, k0, k10, k25]  (normalized)
-             k* = track curvature 0 / 10 / 25 m ahead along the centerline
+Observation: [v_x, v_y, r, e_y, e_psi, k0, k20, k45]  (normalized)
+             k* = track curvature 0 / 20 / 45 m ahead along the centerline
 Action:      [delta, T]  steering in [-0.5, 0.5] rad, throttle in [-1, 1]
 Integration: explicit Euler, dt = 0.02 s
 Tire model:  F_y = -Fy_max * tanh(C_alpha * alpha / Fy_max), with a
@@ -17,7 +17,14 @@ per-step survival bonus, with a one-off penalty for leaving the track / stalling
 and a bonus for finishing; drift mode adds a bonus for sustaining a drift (slip
 held above a threshold without reversing sign) and for forward speed up to a
 soft target, so the agent learns to hold a fast slide rather than swerve back
-and forth or creep slowly. The "free" sandbox keeps only the mode terms.
+and forth or creep slowly. An edge barrier penalty is zero near the centerline
+and ramps up quadratically toward the boundary, giving a dense warning gradient
+before the hard off-track termination. The "free" sandbox keeps only the mode
+terms.
+
+With retry_on_crash=True (random tracks only) a crashed track is re-attempted
+unchanged until the agent finishes it, or until max_retries straight fails, then
+a new layout is drawn -- so the agent practises a track until it can complete it.
 """
 
 import numpy as np
@@ -46,19 +53,21 @@ class DriftEnv(gym.Env):
     MAX_STEPS = 8000       # limit steps
 
     # reward weights
-    W_BETA_DRIFT = 0.5     # drift mode: reward |beta| (kicks the tail out)
+    W_BETA_DRIFT = 0.1     # drift mode: reward |beta| (kicks the tail out)
     W_BETA_GRIP = 10.0     # grip mode: penalize beta^2
-    W_HOLD = 13.0           # drift mode: bonus for sustaining a drift
-    BETA_DRIFT_MIN = 0.3  # |beta| [rad] above which the car counts as drifting
-    HOLD_CAP = 3.0         # [s] held-drift duration at which the bonus saturates
-    W_SPEED = 0.05          # drift mode: reward forward speed (a fast drift beats a slow one)
+    W_HOLD = 7.0            # drift mode: bonus for sustaining a drift
+    BETA_DRIFT_MIN = 0.4  # |beta| [rad] above which the car counts as drifting
+    HOLD_CAP = 2.0         # [s] held-drift duration at which the bonus saturates
+    W_SPEED = 0.01          # drift mode: reward forward speed (a fast drift beats a slow one)
     V_SPEED_TARGET = 10.0  # [m/s] soft cap; no extra speed reward beyond this
-    W_PROG = 50.0            # reward per metre of centerline arc-length advanced
-    W_EY = 0.6
+    W_PROG = 20.0            # reward per metre of centerline arc-length advanced
+    W_EY = 1
+    W_EDGE = 100.0          # peak edge-barrier penalty (per step) reached at the boundary
+    EDGE_MARGIN_FRAC = 0.5 # barrier is zero inside this fraction of the half-width
     W_DDOT = 0.002
-    W_SURVIVE = 8.0          # per-step living reward (dense "stay on track" signal)
-    TERM_PENALTY = 2000.0   # one-off penalty on leaving the track / stalling
-    W_FINISH = 1000.0        # one-off bonus for reaching the end of the track
+    W_SURVIVE = 10.0          # per-step living reward (dense "stay on track" signal)
+    TERM_PENALTY = 2000.0    # one-off penalty on leaving the track / stalling
+    W_FINISH = 500.0         # one-off bonus for reaching the end of the track
 
     # observation normalization: scale to ~unit variance over the driving regime
     # (operating spread, NOT physical max range) and offset the one input that is
@@ -66,12 +75,26 @@ class DriftEnv(gym.Env):
     OBS_SCALE = np.array([4.0, 1.0, 0.5, 1.5, 0.3, 0.05, 0.05, 0.05],
                          dtype=np.float32)
 
-    def __init__(self, mode="drift", track_type="circle", circle_radius=30.0):
+    def __init__(self, mode="drift", track_type="circle", circle_radius=30.0,
+                 retry_on_crash=False, max_retries=8):
         super().__init__()
         assert mode in ("drift", "grip") and track_type in ("circle", "random", "free")
         self.mode = mode
         self.track_type = track_type
         self.circle_radius = circle_radius
+        # repeat-on-crash: re-attempt the same random track until finished (or
+        # max_retries straight fails), then draw a new one. Random tracks only.
+        self.retry_on_crash = retry_on_crash
+        self.max_retries = max_retries
+        self._last_finished = False
+        self._fail_count = 0
+        # cumulative rollout tallies (read back for the end-of-training summary)
+        self._ep_count = 0      # episodes finished/crashed/timed out
+        self._n_finish = 0      # reached the end of the track
+        self._n_crash = 0       # left the track or stalled
+        self._n_timeout = 0     # hit MAX_STEPS without finishing or crashing
+        self._n_tracks = 0      # distinct random tracks drawn
+        self._n_repeat = 0      # episodes that re-attempted an existing track
         self.action_space = spaces.Box(
             low=np.array([-0.5, -1.0], dtype=np.float32),
             high=np.array([0.5, 1.0], dtype=np.float32),
@@ -118,7 +141,18 @@ class DriftEnv(gym.Env):
             if self.track is None:
                 self.track = Track.free()
         else:
-            self.track = Track.random_track(self.np_random)  # new layout each episode
+            # repeat-on-crash: keep the same track after a crash so the agent
+            # re-attempts it; only draw a new layout on a fresh start, after a
+            # finish, or once max_retries straight fails (avoids getting stuck).
+            regenerate = (self.track is None or not self.retry_on_crash
+                          or self._last_finished or self._fail_count >= self.max_retries)
+            if regenerate:
+                self.track = Track.random_track(self.np_random)
+                self._fail_count = 0
+                self._n_tracks += 1
+            else:
+                self._n_repeat += 1
+            self._last_finished = False
         v0 = 11.0 + self.np_random.uniform(-2.0, 2.0)
         psi0 = self.track.psi[0] + self.np_random.uniform(-0.05, 0.05)
         x0, y0 = self.track.xy[0]
@@ -217,6 +251,13 @@ class DriftEnv(gym.Env):
         if not is_free:
             terms["progress"] = self.W_PROG * ds
             terms["e_y"] = -self.W_EY * e_y ** 2
+            # edge barrier: zero inside the safe margin, then ramps up quadratically
+            # to -W_EDGE at the boundary, so approaching the wall is penalized with a
+            # dense gradient *before* the hard off-track termination cliff below.
+            margin = self.EDGE_MARGIN_FRAC * self.track.half_width
+            over = max(0.0, abs(e_y) - margin)
+            span = (1.0 - self.EDGE_MARGIN_FRAC) * self.track.half_width
+            terms["edge"] = -self.W_EDGE * (over / span) ** 2
 
         terminated = bool(vx < 1.0 or (not is_free and abs(e_y) > self.track.half_width))
         finished = (not is_free) and self.track.at_end(self.track_idx)
@@ -228,6 +269,20 @@ class DriftEnv(gym.Env):
             terms["finish"] = self.W_FINISH   # one-off bonus for completing the track
         reward = float(sum(terms.values()))
         truncated = self.steps >= self.MAX_STEPS or finished
+
+        # record the episode outcome so the next reset() can decide whether to
+        # re-attempt this track (crash / timeout) or move on to a new one (finish)
+        if terminated or truncated:
+            self._ep_count += 1
+            if finished:
+                self._last_finished = True
+                self._n_finish += 1
+            elif terminated:
+                self._fail_count += 1
+                self._n_crash += 1
+            else:                       # truncated by MAX_STEPS, still on track
+                self._fail_count += 1
+                self._n_timeout += 1
 
         info = {"x": self.state[0], "y": self.state[1], "psi": self.state[2],
                 "vx": vx, "vy": vy, "r": self.state[5],
